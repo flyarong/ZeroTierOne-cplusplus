@@ -78,7 +78,6 @@ bool FileDB::isReady() { return true; }
 
 void FileDB::save(nlohmann::json *orig,nlohmann::json &record)
 {
-	char p1[4096],p2[4096],pb[4096];
 	try {
 		if (orig) {
 			if (*orig != record) {
@@ -96,12 +95,10 @@ void FileDB::save(nlohmann::json *orig,nlohmann::json &record)
 				get(nwid,old);
 
 				if ((!old.is_object())||(old != record)) {
-					OSUtils::ztsnprintf(p1,sizeof(p1),"%s" ZT_PATH_SEPARATOR_S "%.16llx.json.new",_networksPath.c_str(),nwid);
-					OSUtils::ztsnprintf(p2,sizeof(p2),"%s" ZT_PATH_SEPARATOR_S "%.16llx.json",_networksPath.c_str(),nwid);
-					if (!OSUtils::writeFile(p1,OSUtils::jsonDump(record,-1)))
-						fprintf(stderr,"WARNING: controller unable to write to path: %s" ZT_EOL_S,p1);
-					OSUtils::rename(p1,p2);
-
+					char npath[4096];
+					OSUtils::ztsnprintf(npath,sizeof(npath),"%s" ZT_PATH_SEPARATOR_S "%.16llx.json",_networksPath.c_str(),nwid);
+					if (!OSUtils::writeFile(npath,OSUtils::jsonDump(record,-1)))
+						fprintf(stderr,"WARNING: controller unable to write to path: %s" ZT_EOL_S,npath);
 					_networkChanged(old,record,true);
 				}
 			}
@@ -113,26 +110,25 @@ void FileDB::save(nlohmann::json *orig,nlohmann::json &record)
 				get(nwid,network,id,old);
 
 				if ((!old.is_object())||(old != record)) {
-					OSUtils::ztsnprintf(pb,sizeof(pb),"%s" ZT_PATH_SEPARATOR_S "%.16llx" ZT_PATH_SEPARATOR_S "member",_networksPath.c_str(),(unsigned long long)nwid);
-					OSUtils::ztsnprintf(p1,sizeof(p1),"%s" ZT_PATH_SEPARATOR_S "%.10llx.json.new",pb,(unsigned long long)id);
-					if (!OSUtils::writeFile(p1,OSUtils::jsonDump(record,-1))) {
-						OSUtils::ztsnprintf(p2,sizeof(p2),"%s" ZT_PATH_SEPARATOR_S "%.16llx",_networksPath.c_str(),(unsigned long long)nwid);
-						OSUtils::mkdir(p2);
-						OSUtils::mkdir(pb);
-						if (!OSUtils::writeFile(p1,OSUtils::jsonDump(record,-1)))
-							fprintf(stderr,"WARNING: controller unable to write to path: %s" ZT_EOL_S,p1);
+					char pathBase[4096],mpath[4096],npath[4096];
+					OSUtils::ztsnprintf(pathBase,sizeof(pathBase),"%s" ZT_PATH_SEPARATOR_S "%.16llx" ZT_PATH_SEPARATOR_S "member",_networksPath.c_str(),(unsigned long long)nwid);
+					OSUtils::ztsnprintf(mpath,sizeof(mpath),"%s" ZT_PATH_SEPARATOR_S "%.10llx.json",pathBase,(unsigned long long)id);
+					if (!OSUtils::writeFile(mpath,OSUtils::jsonDump(record,-1))) {
+						OSUtils::ztsnprintf(npath,sizeof(npath),"%s" ZT_PATH_SEPARATOR_S "%.16llx",_networksPath.c_str(),(unsigned long long)nwid);
+						OSUtils::mkdir(npath);
+						OSUtils::mkdir(pathBase);
+						if (!OSUtils::writeFile(mpath,OSUtils::jsonDump(record,-1)))
+							fprintf(stderr,"WARNING: controller unable to write to path: %s" ZT_EOL_S,mpath);
 					}
-					OSUtils::ztsnprintf(p2,sizeof(p2),"%s" ZT_PATH_SEPARATOR_S "%.10llx.json",pb,(unsigned long long)id);
-					OSUtils::rename(p1,p2);
-
 					_memberChanged(old,record,true);
 				}
 			}
 		} else if (objtype == "trace") {
 			const std::string id = record["id"];
 			if (id.length() > 0) {
-				OSUtils::ztsnprintf(p1,sizeof(p1),"%s" ZT_PATH_SEPARATOR_S "%s.json",_tracePath.c_str(),id.c_str());
-				OSUtils::writeFile(p1,OSUtils::jsonDump(record,-1));
+				char tpath[4096];
+				OSUtils::ztsnprintf(tpath,sizeof(tpath),"%s" ZT_PATH_SEPARATOR_S "%s.json",_tracePath.c_str(),id.c_str());
+				OSUtils::writeFile(tpath,OSUtils::jsonDump(record,-1));
 			}
 		}
 	} catch ( ... ) {} // drop invalid records missing fields
@@ -142,25 +138,19 @@ void FileDB::eraseNetwork(const uint64_t networkId)
 {
 	nlohmann::json network,nullJson;
 	get(networkId,network);
-	char p[16384];
+	char p[4096];
 	OSUtils::ztsnprintf(p,sizeof(p),"%s" ZT_PATH_SEPARATOR_S "%.16llx.json",_networksPath.c_str(),networkId);
-
-	if (OSUtils::fileExists(p,false)){
-	  OSUtils::rm(p);
-        }
+	OSUtils::rm(p);
 	_networkChanged(network,nullJson,true);
 }
 
 void FileDB::eraseMember(const uint64_t networkId,const uint64_t memberId)
 {
-	nlohmann::json network,member,nullJson;
-	get(networkId,network);
-        get(memberId,member);
-	char p[16384];
+	nlohmann::json member,nullJson;
+	get(memberId,member);
+	char p[4096];
 	OSUtils::ztsnprintf(p,sizeof(p),"%s" ZT_PATH_SEPARATOR_S "%.16llx" ZT_PATH_SEPARATOR_S "member" ZT_PATH_SEPARATOR_S "%.10llx.json",_networksPath.c_str(),networkId,memberId);
-	if (OSUtils::fileExists(p,false)){
-	    OSUtils::rm(p);
-	}
+	OSUtils::rm(p);
 	_memberChanged(member,nullJson,true);
 }
 
