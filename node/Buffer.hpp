@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_BUFFER_HPP
 #define ZT_BUFFER_HPP
@@ -116,9 +103,9 @@ public:
 		if (unlikely(b._l > C))
 			throw ZT_EXCEPTION_OUT_OF_BOUNDS;
 		if (C2 == C) {
-			ZT_FAST_MEMCPY(this,&b,sizeof(Buffer<C>));
+			memcpy(this,&b,sizeof(Buffer<C>));
 		} else {
-			ZT_FAST_MEMCPY(_b,b._b,_l = b._l);
+			memcpy(_b,b._b,_l = b._l);
 		}
 		return *this;
 	}
@@ -127,7 +114,7 @@ public:
 	{
 		if (unlikely(l > C))
 			throw ZT_EXCEPTION_OUT_OF_BOUNDS;
-		ZT_FAST_MEMCPY(_b,b,l);
+		memcpy(_b,b,l);
 		_l = l;
 	}
 
@@ -281,7 +268,7 @@ public:
 	{
 		if (unlikely((_l + l) > C))
 			throw ZT_EXCEPTION_OUT_OF_BOUNDS;
-		ZT_FAST_MEMCPY(_b + _l,b,l);
+		memcpy(_b + _l,b,l);
 		_l += l;
 	}
 

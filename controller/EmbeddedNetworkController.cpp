@@ -1,20 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include <stdint.h>
 #include <stdio.h>
@@ -38,6 +33,11 @@
 #include "../version.h"
 
 #include "EmbeddedNetworkController.hpp"
+#include "LFDB.hpp"
+#include "FileDB.hpp"
+#ifdef ZT_CONTROLLER_USE_LIBPQ
+#include "PostgreSQL.hpp"
+#endif
 
 #include "../node/Node.hpp"
 #include "../node/CertificateOfMembership.hpp"
@@ -336,14 +336,14 @@ static bool _parseRule(json &r,ZT_VirtualNetworkRule &rule)
 	} else if (t == "MATCH_IPV6_SOURCE") {
 		rule.t |= ZT_NETWORK_RULE_MATCH_IPV6_SOURCE;
 		InetAddress ip(OSUtils::jsonString(r["ip"],"::0").c_str());
-		ZT_FAST_MEMCPY(rule.v.ipv6.ip,reinterpret_cast<struct sockaddr_in6 *>(&ip)->sin6_addr.s6_addr,16);
+		memcpy(rule.v.ipv6.ip,reinterpret_cast<struct sockaddr_in6 *>(&ip)->sin6_addr.s6_addr,16);
 		rule.v.ipv6.mask = Utils::ntoh(reinterpret_cast<struct sockaddr_in6 *>(&ip)->sin6_port) & 0xff;
 		if (rule.v.ipv6.mask > 128) rule.v.ipv6.mask = 128;
 		return true;
 	} else if (t == "MATCH_IPV6_DEST") {
 		rule.t |= ZT_NETWORK_RULE_MATCH_IPV6_DEST;
 		InetAddress ip(OSUtils::jsonString(r["ip"],"::0").c_str());
-		ZT_FAST_MEMCPY(rule.v.ipv6.ip,reinterpret_cast<struct sockaddr_in6 *>(&ip)->sin6_addr.s6_addr,16);
+		memcpy(rule.v.ipv6.ip,reinterpret_cast<struct sockaddr_in6 *>(&ip)->sin6_addr.s6_addr,16);
 		rule.v.ipv6.mask = Utils::ntoh(reinterpret_cast<struct sockaddr_in6 *>(&ip)->sin6_port) & 0xff;
 		if (rule.v.ipv6.mask > 128) rule.v.ipv6.mask = 128;
 		return true;
@@ -456,11 +456,15 @@ static bool _parseRule(json &r,ZT_VirtualNetworkRule &rule)
 
 } // anonymous namespace
 
-EmbeddedNetworkController::EmbeddedNetworkController(Node *node,const char *dbPath) :
+EmbeddedNetworkController::EmbeddedNetworkController(Node *node,const char *ztPath,const char *dbPath, int listenPort, RedisConfig *rc) :
 	_startTime(OSUtils::now()),
+	_listenPort(listenPort),
 	_node(node),
+	_ztPath(ztPath),
 	_path(dbPath),
-	_sender((NetworkController::Sender *)0)
+	_sender((NetworkController::Sender *)0),
+	_db(this),
+	_rc(rc)
 {
 }
 
@@ -478,13 +482,48 @@ void EmbeddedNetworkController::init(const Identity &signingId,Sender *sender)
 	_signingId = signingId;
 	_sender = sender;
 	_signingIdAddressString = signingId.address().toString(tmp);
-#ifdef ZT_CONTROLLER_USE_RETHINKDB
-	if ((_path.length() > 10)&&(_path.substr(0,10) == "rethinkdb:"))
-		_db.reset(new RethinkDB(this,_signingId,_path.c_str()));
-	else // else use FileDB after endif
+
+#ifdef ZT_CONTROLLER_USE_LIBPQ
+	if ((_path.length() > 9)&&(_path.substr(0,9) == "postgres:")) {
+		_db.addDB(std::shared_ptr<DB>(new PostgreSQL(_signingId,_path.substr(9).c_str(), _listenPort, _rc)));
+	} else {
 #endif
-		_db.reset(new FileDB(this,_signingId,_path.c_str()));
-	_db->waitForReady();
+		_db.addDB(std::shared_ptr<DB>(new FileDB(_path.c_str())));
+#ifdef ZT_CONTROLLER_USE_LIBPQ
+	}
+#endif
+
+	std::string lfJSON;
+	OSUtils::readFile((_ztPath + ZT_PATH_SEPARATOR_S "local.conf").c_str(),lfJSON);
+	if (lfJSON.length() > 0) {
+		nlohmann::json lfConfig(OSUtils::jsonParse(lfJSON));
+		nlohmann::json &settings = lfConfig["settings"];
+		if (settings.is_object()) {
+			nlohmann::json &controllerDb = settings["controllerDb"];
+			if (controllerDb.is_object()) {
+				std::string type = controllerDb["type"];
+				if (type == "lf") {
+					std::string lfOwner = controllerDb["owner"];
+					std::string lfHost = controllerDb["host"];
+					int lfPort = controllerDb["port"];
+					bool storeOnlineState = controllerDb["storeOnlineState"];
+					if ((lfOwner.length())&&(lfHost.length())&&(lfPort > 0)&&(lfPort < 65536)) {
+						std::size_t pubHdrLoc = lfOwner.find("Public: ");
+						if ((pubHdrLoc > 0)&&((pubHdrLoc + 8) < lfOwner.length())) {
+							std::string lfOwnerPublic = lfOwner.substr(pubHdrLoc + 8);
+							std::size_t pubHdrEnd = lfOwnerPublic.find_first_of("\n\r\t ");
+							if (pubHdrEnd != std::string::npos) {
+								lfOwnerPublic = lfOwnerPublic.substr(0,pubHdrEnd);
+								_db.addDB(std::shared_ptr<DB>(new LFDB(_signingId,_path.c_str(),lfOwner.c_str(),lfOwnerPublic.c_str(),lfHost.c_str(),lfPort,storeOnlineState)));
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	_db.waitForReady();
 }
 
 void EmbeddedNetworkController::request(
@@ -515,15 +554,12 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpGET(
 	std::string &responseBody,
 	std::string &responseContentType)
 {
-	if (!_db)
-		return 500;
-
 	if ((path.size() > 0)&&(path[0] == "network")) {
 
 		if ((path.size() >= 2)&&(path[1].length() == 16)) {
 			const uint64_t nwid = Utils::hexStrToU64(path[1].c_str());
 			json network;
-			if (!_db->get(nwid,network))
+			if (!_db.get(nwid,network))
 				return 404;
 
 			if (path.size() >= 3) {
@@ -535,7 +571,7 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpGET(
 
 						const uint64_t address = Utils::hexStrToU64(path[3].c_str());
 						json member;
-						if (!_db->get(nwid,network,address,member))
+						if (!_db.get(nwid,network,address,member))
 							return 404;
 						responseBody = OSUtils::jsonDump(member);
 						responseContentType = "application/json";
@@ -545,11 +581,11 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpGET(
 
 						responseBody = "{";
 						std::vector<json> members;
-						if (_db->get(nwid,network,members)) {
+						if (_db.get(nwid,network,members)) {
 							responseBody.reserve((members.size() + 2) * 32);
 							std::string mid;
 							for(auto member=members.begin();member!=members.end();++member) {
-								mid = (*member)["id"];
+								mid = OSUtils::jsonString((*member)["id"], "");
 								char tmp[128];
 								OSUtils::ztsnprintf(tmp,sizeof(tmp),"%s\"%s\":%llu",(responseBody.length() > 1) ? "," : "",mid.c_str(),(unsigned long long)OSUtils::jsonInt((*member)["revision"],0));
 								responseBody.append(tmp);
@@ -574,12 +610,12 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpGET(
 		} else if (path.size() == 1) {
 			// List networks
 
-			std::vector<uint64_t> networkIds;
-			_db->networks(networkIds);
+			std::set<uint64_t> networkIds;
+			_db.networks(networkIds);
 			char tmp[64];
 			responseBody = "[";
 			responseBody.reserve((networkIds.size() + 1) * 24);
-			for(std::vector<uint64_t>::const_iterator i(networkIds.begin());i!=networkIds.end();++i) {
+			for(std::set<uint64_t>::const_iterator i(networkIds.begin());i!=networkIds.end();++i) {
 				if (responseBody.length() > 1)
 					responseBody.push_back(',');
 				OSUtils::ztsnprintf(tmp,sizeof(tmp),"\"%.16llx\"",(unsigned long long)*i);
@@ -596,7 +632,7 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpGET(
 		// Controller status
 
 		char tmp[4096];
-		const bool dbOk = _db->isReady();
+		const bool dbOk = _db.isReady();
 		OSUtils::ztsnprintf(tmp,sizeof(tmp),"{\n\t\"controller\": true,\n\t\"apiVersion\": %d,\n\t\"clock\": %llu,\n\t\"databaseReady\": %s\n}\n",ZT_NETCONF_CONTROLLER_API_VERSION,(unsigned long long)OSUtils::now(),dbOk ? "true" : "false");
 		responseBody = tmp;
 		responseContentType = "application/json";
@@ -615,8 +651,6 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpPOST(
 	std::string &responseBody,
 	std::string &responseContentType)
 {
-	if (!_db)
-		return 500;
 	if (path.empty())
 		return 404;
 
@@ -650,8 +684,7 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpPOST(
 					OSUtils::ztsnprintf(addrs,sizeof(addrs),"%.10llx",(unsigned long long)address);
 
 					json member,network;
-					_db->get(nwid,network,address,member);
-					json origMember(member); // for detecting changes
+					_db.get(nwid,network,address,member);
 					DB::initMember(member);
 
 					try {
@@ -745,7 +778,7 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpPOST(
 					member["nwid"] = nwids;
 
 					DB::cleanMember(member);
-					_db->save(&origMember,member);
+					_db.save(member,true);
 					responseBody = OSUtils::jsonDump(member);
 					responseContentType = "application/json";
 
@@ -764,7 +797,7 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpPOST(
 						Utils::getSecureRandom(&nwidPostfix,sizeof(nwidPostfix));
 						uint64_t tryNwid = nwidPrefix | (nwidPostfix & 0xffffffULL);
 						if ((tryNwid & 0xffffffULL) == 0ULL) tryNwid |= 1ULL;
-						if (!_db->hasNetwork(tryNwid)) {
+						if (!_db.hasNetwork(tryNwid)) {
 							nwid = tryNwid;
 							break;
 						}
@@ -775,8 +808,7 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpPOST(
 				OSUtils::ztsnprintf(nwids,sizeof(nwids),"%.16llx",(unsigned long long)nwid);
 
 				json network;
-				_db->get(nwid,network);
-				json origNetwork(network); // for detecting changes
+				_db.get(nwid,network);
 				DB::initNetwork(network);
 
 				try {
@@ -997,6 +1029,26 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpPOST(
 						}
 					}
 
+					if (b.count("dns")) {
+						json &dns = b["dns"];
+						if (dns.is_object()) {
+							json nd;
+
+							nd["domain"] = dns["domain"];
+
+							json &srv = dns["servers"];
+							if (srv.is_array()) {
+								json ns = json::array();
+								for(unsigned int i=0;i<srv.size();++i) {
+									ns.push_back(srv[i]);
+								}
+								nd["servers"] = ns;
+							}
+
+							network["dns"] = nd;
+						}
+					}
+
 				} catch ( ... ) {
 					responseBody = "{ \"message\": \"exception occurred while parsing body variables\" }";
 					responseContentType = "application/json";
@@ -1007,7 +1059,7 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpPOST(
 				network["nwid"] = nwids; // legacy
 
 				DB::cleanNetwork(network);
-				_db->save(&origNetwork,network);
+				_db.save(network,true);
 
 				responseBody = OSUtils::jsonDump(network);
 				responseContentType = "application/json";
@@ -1029,8 +1081,6 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpDELETE(
 	std::string &responseBody,
 	std::string &responseContentType)
 {
-	if (!_db)
-		return 500;
 	if (path.empty())
 		return 404;
 
@@ -1042,7 +1092,8 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpDELETE(
 					const uint64_t address = Utils::hexStrToU64(path[3].c_str());
 
 					json network,member;
-					_db->get(nwid,network,address,member);
+					_db.get(nwid,network,address,member);
+					_db.eraseMember(nwid, address);
 
 					{
 						std::lock_guard<std::mutex> l(_memberStatus_l);
@@ -1057,8 +1108,8 @@ unsigned int EmbeddedNetworkController::handleControlPlaneHttpDELETE(
 				}
 			} else {
 				json network;
-				_db->get(nwid,network);
-				_db->eraseNetwork(nwid);
+				_db.get(nwid,network);
+				_db.eraseNetwork(nwid);
 
 				{
 					std::lock_guard<std::mutex> l(_memberStatus_l);
@@ -1087,9 +1138,6 @@ void EmbeddedNetworkController::handleRemoteTrace(const ZT_RemoteTrace &rt)
 	static volatile unsigned long idCounter = 0;
 	char id[128],tmp[128];
 	std::string k,v;
-
-	if (!_db)
-		return;
 
 	try {
 		// Convert Dictionary into JSON object
@@ -1129,13 +1177,13 @@ void EmbeddedNetworkController::handleRemoteTrace(const ZT_RemoteTrace &rt)
 		d["objtype"] = "trace";
 		d["ts"] = now;
 		d["nodeId"] = Utils::hex10(rt.origin,tmp);
-		_db->save((nlohmann::json *)0,d);
+		_db.save(d,true);
 	} catch ( ... ) {
 		// drop invalid trace messages if an error occurs
 	}
 }
 
-void EmbeddedNetworkController::onNetworkUpdate(const uint64_t networkId)
+void EmbeddedNetworkController::onNetworkUpdate(const void *db,uint64_t networkId,const nlohmann::json &network)
 {
 	// Send an update to all members of the network that are online
 	const int64_t now = OSUtils::now();
@@ -1146,7 +1194,7 @@ void EmbeddedNetworkController::onNetworkUpdate(const uint64_t networkId)
 	}
 }
 
-void EmbeddedNetworkController::onNetworkMemberUpdate(const uint64_t networkId,const uint64_t memberId)
+void EmbeddedNetworkController::onNetworkMemberUpdate(const void *db,uint64_t networkId,uint64_t memberId,const nlohmann::json &member)
 {
 	// Push update to member if online
 	try {
@@ -1157,7 +1205,7 @@ void EmbeddedNetworkController::onNetworkMemberUpdate(const uint64_t networkId,c
 	} catch ( ... ) {}
 }
 
-void EmbeddedNetworkController::onNetworkMemberDeauthorize(const uint64_t networkId,const uint64_t memberId)
+void EmbeddedNetworkController::onNetworkMemberDeauthorize(const void *db,uint64_t networkId,uint64_t memberId)
 {
 	const int64_t now = OSUtils::now();
 	Revocation rev((uint32_t)_node->prng(),networkId,0,now,ZT_REVOCATION_FLAG_FAST_PROPAGATE,Address(memberId),Revocation::CREDENTIAL_TYPE_COM);
@@ -1180,10 +1228,7 @@ void EmbeddedNetworkController::_request(
 {
 	char nwids[24];
 	DB::NetworkSummaryInfo ns;
-	json network,member,origMember;
-
-	if (!_db)
-		return;
+	json network,member;
 
 	if (((!_signingId)||(!_signingId.hasPrivate()))||(_signingId.address().toInt() != (nwid >> 24))||(!_sender))
 		return;
@@ -1198,15 +1243,14 @@ void EmbeddedNetworkController::_request(
 		ms.lastRequestTime = now;
 	}
 
-	_db->nodeIsOnline(nwid,identity.address().toInt(),fromAddr);
+	_db.nodeIsOnline(nwid,identity.address().toInt(),fromAddr);
 
 	Utils::hex(nwid,nwids);
-	_db->get(nwid,network,identity.address().toInt(),member,ns);
+	_db.get(nwid,network,identity.address().toInt(),member,ns);
 	if ((!network.is_object())||(network.size() == 0)) {
 		_sender->ncSendError(nwid,requestPacketId,identity.address(),NetworkController::NC_ERROR_OBJECT_NOT_FOUND);
 		return;
 	}
-	origMember = member;
 	const bool newMember = ((!member.is_object())||(member.size() == 0));
 	DB::initMember(member);
 
@@ -1307,7 +1351,7 @@ void EmbeddedNetworkController::_request(
 	} else {
 		// If they are not authorized, STOP!
 		DB::cleanMember(member);
-		_db->save(&origMember,member);
+		_db.save(member,true);
 		_sender->ncSendError(nwid,requestPacketId,identity.address(),NetworkController::NC_ERROR_ACCESS_DENIED);
 		return;
 	}
@@ -1342,6 +1386,7 @@ void EmbeddedNetworkController::_request(
 	nc->mtu = std::max(std::min((unsigned int)OSUtils::jsonInt(network["mtu"],ZT_DEFAULT_MTU),(unsigned int)ZT_MAX_MTU),(unsigned int)ZT_MIN_MTU);
 	nc->multicastLimit = (unsigned int)OSUtils::jsonInt(network["multicastLimit"],32ULL);
 
+	
 	std::string rtt(OSUtils::jsonString(member["remoteTraceTarget"],""));
 	if (rtt.length() == 10) {
 		nc->remoteTraceTarget = Address(Utils::hexStrToU64(rtt.c_str()));
@@ -1368,6 +1413,7 @@ void EmbeddedNetworkController::_request(
 	json &tags = network["tags"];
 	json &memberCapabilities = member["capabilities"];
 	json &memberTags = member["tags"];
+	json &dns = network["dns"];
 
 	if (metaData.getUI(ZT_NETWORKCONFIG_REQUEST_METADATA_KEY_RULES_ENGINE_REV,0) <= 0) {
 		// Old versions with no rules engine support get an allow everything rule.
@@ -1511,13 +1557,13 @@ void EmbeddedNetworkController::_request(
 				const std::string ips = ipAssignments[i];
 				InetAddress ip(ips.c_str());
 
-				// IP assignments are only pushed if there is a corresponding local route. We also now get the netmask bits from
-				// this route, ignoring the netmask bits field of the assigned IP itself. Using that was worthless and a source
-				// of user error / poor UX.
 				int routedNetmaskBits = -1;
 				for(unsigned int rk=0;rk<nc->routeCount;++rk) {
-					if ( (!nc->routes[rk].via.ss_family) && (reinterpret_cast<const InetAddress *>(&(nc->routes[rk].target))->containsAddress(ip)) )
-						routedNetmaskBits = reinterpret_cast<const InetAddress *>(&(nc->routes[rk].target))->netmaskBits();
+					if (reinterpret_cast<const InetAddress *>(&(nc->routes[rk].target))->containsAddress(ip)) {
+						const int nb = (int)(reinterpret_cast<const InetAddress *>(&(nc->routes[rk].target))->netmaskBits());
+						if (nb > routedNetmaskBits)
+							routedNetmaskBits = nb;
+					}
 				}
 
 				if (routedNetmaskBits >= 0) {
@@ -1544,8 +1590,8 @@ void EmbeddedNetworkController::_request(
 				InetAddress ipRangeEnd(OSUtils::jsonString(pool["ipRangeEnd"],"").c_str());
 				if ( (ipRangeStart.ss_family == AF_INET6) && (ipRangeEnd.ss_family == AF_INET6) ) {
 					uint64_t s[2],e[2],x[2],xx[2];
-					ZT_FAST_MEMCPY(s,ipRangeStart.rawIpData(),16);
-					ZT_FAST_MEMCPY(e,ipRangeEnd.rawIpData(),16);
+					memcpy(s,ipRangeStart.rawIpData(),16);
+					memcpy(e,ipRangeEnd.rawIpData(),16);
 					s[0] = Utils::ntoh(s[0]);
 					s[1] = Utils::ntoh(s[1]);
 					e[0] = Utils::ntoh(e[0]);
@@ -1609,6 +1655,7 @@ void EmbeddedNetworkController::_request(
 				if ( (ipRangeStartIA.ss_family == AF_INET) && (ipRangeEndIA.ss_family == AF_INET) ) {
 					uint32_t ipRangeStart = Utils::ntoh((uint32_t)(reinterpret_cast<struct sockaddr_in *>(&ipRangeStartIA)->sin_addr.s_addr));
 					uint32_t ipRangeEnd = Utils::ntoh((uint32_t)(reinterpret_cast<struct sockaddr_in *>(&ipRangeEndIA)->sin_addr.s_addr));
+
 					if ((ipRangeEnd < ipRangeStart)||(ipRangeStart == 0))
 						continue;
 					uint32_t ipRangeLen = ipRangeEnd - ipRangeStart;
@@ -1619,8 +1666,9 @@ void EmbeddedNetworkController::_request(
 					for(uint32_t k=ipRangeStart,trialCount=0;((k<=ipRangeEnd)&&(trialCount < 1000));++k,++trialCount) {
 						uint32_t ip = (ipRangeLen > 0) ? (ipRangeStart + (ipTrialCounter % ipRangeLen)) : ipRangeStart;
 						++ipTrialCounter;
-						if ((ip & 0x000000ff) == 0x000000ff)
+						if ((ip & 0x000000ff) == 0x000000ff) {
 							continue; // don't allow addresses that end in .255
+						}
 
 						// Check if this IP is within a local-to-Ethernet routed network
 						int routedNetmaskBits = -1;
@@ -1658,6 +1706,20 @@ void EmbeddedNetworkController::_request(
 			}
 		}
 	}
+	
+	if(dns.is_object()) {
+		std::string domain = OSUtils::jsonString(dns["domain"],"");
+		memcpy(nc->dns.domain, domain.c_str(), domain.size());
+		json &addrArray = dns["servers"];
+		if (addrArray.is_array()) {
+			for(unsigned int j = 0; j < addrArray.size() && j < ZT_MAX_DNS_SERVERS; ++j) {
+				json &addr = addrArray[j];
+				nc->dns.server_addr[j] = InetAddress(OSUtils::jsonString(addr,"").c_str());
+			}
+		}
+	} else {
+		dns = json::object();
+	}
 
 	// Issue a certificate of ownership for all static IPs
 	if (nc->staticIpCount) {
@@ -1677,7 +1739,7 @@ void EmbeddedNetworkController::_request(
 	}
 
 	DB::cleanMember(member);
-	_db->save(&origMember,member);
+	_db.save(member,true);
 	_sender->ncSendConfig(nwid,requestPacketId,identity.address(),*(nc.get()),metaData.getUI(ZT_NETWORKCONFIG_REQUEST_METADATA_KEY_VERSION,0) < 6);
 }
 

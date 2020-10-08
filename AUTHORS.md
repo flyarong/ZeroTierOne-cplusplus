@@ -1,7 +1,10 @@
+# Authors and Third Party Code Licensing Information
+
 ## Primary Authors
 
  * ZeroTier Core and ZeroTier One virtual networking service<br>
    Adam Ierymenko / adam.ierymenko@zerotier.com
+   Joseph Henry / joseph.henry@zerotier.com (QoS and multipath)
 
  * Java JNI Interface to enable Android application development, and Android app itself (code for that is elsewhere)<br>
    Grant Limberg / glimberg@gmail.com
@@ -25,7 +28,7 @@
 
 ## Third-Party Code
 
-ZeroTier includes the following third party code, either in ext/ or incorporated into the ZeroTier core.
+ZeroTier includes the following third party code, either in ext/ or incorporated into the ZeroTier core. This third party code remains licensed under its original license and is not subject to ZeroTier's BSL license.
 
  * LZ4 compression algorithm by Yann Collet
 
@@ -44,13 +47,6 @@ ZeroTier includes the following third party code, either in ext/ or incorporated
    * Files: ext/json/*
    * Home page: https://github.com/nlohmann/json
    * License grant: MIT
-
- * TunTapOSX by Mattias Nissler
-
-   * Files: ext/tap-mac/tuntap/*
-   * Home page: http://tuntaposx.sourceforge.net/
-   * License grant: BSD attribution no-endorsement
-   * ZeroTier Modifications: change interface name to zt#, increase max MTU, increase max devices
 
  * tap-windows6 by the OpenVPN project
 
@@ -71,3 +67,9 @@ ZeroTier includes the following third party code, either in ext/ or incorporated
    * Files: ext/libnatpmp/* ext/miniupnpc/*
    * Home page: http://miniupnp.free.fr/
    * License grant: BSD attribution no-endorsement
+
+ * cpp-httplib by yhirose
+
+   * Files: ext/cpp-httplib/*
+   * Home page: https://github.com/yhirose/cpp-httplib
+   * License grant: MIT

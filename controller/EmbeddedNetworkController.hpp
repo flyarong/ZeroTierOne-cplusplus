@@ -1,20 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_SQLITENETWORKCONTROLLER_HPP
 #define ZT_SQLITENETWORKCONTROLLER_HPP
@@ -43,23 +38,21 @@
 #include "../ext/json/json.hpp"
 
 #include "DB.hpp"
-#include "FileDB.hpp"
-#ifdef ZT_CONTROLLER_USE_RETHINKDB
-#include "RethinkDB.hpp"
-#endif
+#include "DBMirrorSet.hpp"
 
 namespace ZeroTier {
 
 class Node;
+struct RedisConfig;
 
-class EmbeddedNetworkController : public NetworkController
+class EmbeddedNetworkController : public NetworkController,public DB::ChangeListener
 {
 public:
 	/**
 	 * @param node Parent node
 	 * @param dbPath Database path (file path or database credentials)
 	 */
-	EmbeddedNetworkController(Node *node,const char *dbPath);
+	EmbeddedNetworkController(Node *node,const char *ztPath,const char *dbPath, int listenPort, RedisConfig *rc);
 	virtual ~EmbeddedNetworkController();
 
 	virtual void init(const Identity &signingId,Sender *sender);
@@ -95,10 +88,9 @@ public:
 
 	void handleRemoteTrace(const ZT_RemoteTrace &rt);
 
-	// Called on update via POST or by JSONDB on external update of network or network member records
-	void onNetworkUpdate(const uint64_t networkId);
-	void onNetworkMemberUpdate(const uint64_t networkId,const uint64_t memberId);
-	void onNetworkMemberDeauthorize(const uint64_t networkId,const uint64_t memberId);
+	virtual void onNetworkUpdate(const void *db,uint64_t networkId,const nlohmann::json &network);
+	virtual void onNetworkMemberUpdate(const void *db,uint64_t networkId,uint64_t memberId,const nlohmann::json &member);
+	virtual void onNetworkMemberDeauthorize(const void *db,uint64_t networkId,uint64_t memberId);
 
 private:
 	void _request(uint64_t nwid,const InetAddress &fromAddr,uint64_t requestPacketId,const Identity &identity,const Dictionary<ZT_NETWORKCONFIG_METADATA_DICT_CAPACITY> &metaData);
@@ -141,17 +133,24 @@ private:
 	};
 
 	const int64_t _startTime;
+	int _listenPort;
 	Node *const _node;
+	std::string _ztPath;
 	std::string _path;
 	Identity _signingId;
 	std::string _signingIdAddressString;
 	NetworkController::Sender *_sender;
-	std::unique_ptr<DB> _db;
+
+	DBMirrorSet _db;
 	BlockingQueue< _RQEntry * > _queue;
+
 	std::vector<std::thread> _threads;
 	std::mutex _threads_l;
+
 	std::unordered_map< _MemberStatusKey,_MemberStatus,_MemberStatusHash > _memberStatus;
 	std::mutex _memberStatus_l;
+
+	RedisConfig *_rc;
 };
 
 } // namespace ZeroTier

@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_ONESERVICE_HPP
 #define ZT_ONESERVICE_HPP
@@ -30,16 +17,17 @@
 #include <string>
 #include <vector>
 
-#include "../node/InetAddress.hpp"
+namespace ZeroTier {
 
 #ifdef ZT_SDK
-#include "../node/Node.hpp"
-// Use the virtual netcon endpoint instead of a tun/tap port driver
-#include "../include/VirtualTap.h"
+class VirtualTap;
+// Use the virtual libzt endpoint instead of a tun/tap port driver
 namespace ZeroTier { typedef VirtualTap EthernetTap; }
 #endif
 
-namespace ZeroTier {
+// Forward declaration so we can avoid dragging everything in
+struct InetAddress;
+class Node;
 
 /**
  * Local service for ZeroTier One as system VPN/NFV provider
@@ -98,6 +86,11 @@ public:
 		 * Allow overriding of system default routes for "full tunnel" operation?
 		 */
 		bool allowDefault;
+
+		/**
+		 * Allow configuration of DNS for the network
+		 */
+		bool allowDNS;
 	};
 
 	/**
@@ -147,12 +140,18 @@ public:
 	virtual std::string portDeviceName(uint64_t nwid) const = 0;
 
 #ifdef ZT_SDK
-	virtual void leave(const uint64_t hp) = 0;
-	virtual void join(const uint64_t hp) = 0;
-	virtual std::string givenHomePath() = 0;
+	/**
+	 * Whether we allow access to the service via local HTTP requests (disabled by default in libzt)
+	 */
+	bool allowHttpBackplaneManagement = false;
+	/**
+	 * @return Reference to the Node
+	 */
 	virtual Node * getNode() = 0;
-	virtual void removeNets() = 0;
-	virtual std::vector<ZT_VirtualNetworkRoute> *getRoutes(uint64_t nwid) = 0;
+	/**
+	 * Fills out a structure with network-specific route information
+	 */
+	virtual void getRoutes(uint64_t nwid, void *routeArray, unsigned int *numRoutes) = 0;
 #endif
 
 	/**

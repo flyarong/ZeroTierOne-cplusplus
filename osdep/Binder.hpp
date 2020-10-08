@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_BINDER_HPP
 #define ZT_BINDER_HPP
@@ -360,6 +347,27 @@ public:
 			}
 		}
 
+		// Generate set of unique interface names (used for formation of logical link set in multipath code)
+		// TODO: Could be gated not to run if multipath is not enabled.
+		for(std::map<InetAddress,std::string>::const_iterator ii(localIfAddrs.begin());ii!=localIfAddrs.end();++ii) {
+			linkIfNames.insert(ii->second);
+		}
+		for (std::set<std::string>::iterator si(linkIfNames.begin());si!=linkIfNames.end();) {
+			bool bFoundMatch = false;
+			for(std::map<InetAddress,std::string>::const_iterator ii(localIfAddrs.begin());ii!=localIfAddrs.end();++ii) {
+				if (ii->second == *si) {
+					bFoundMatch = true;
+					break;
+				}
+			}
+			if (!bFoundMatch) {
+				linkIfNames.erase(si++);
+			}
+			else {
+				++si;
+			}
+		}
+
 		// Create new bindings for those not already bound
 		for(std::map<InetAddress,std::string>::const_iterator ii(localIfAddrs.begin());ii!=localIfAddrs.end();++ii) {
 			unsigned int bi = 0;
@@ -373,7 +381,7 @@ public:
 				tcps = phy.tcpListen(reinterpret_cast<const struct sockaddr *>(&(ii->first)),(void *)0);
 				if ((udps)&&(tcps)) {
 #ifdef __LINUX__
-					// Bind Linux sockets to their device so routes tha we manage do not override physical routes (wish all platforms had this!)
+					// Bind Linux sockets to their device so routes that we manage do not override physical routes (wish all platforms had this!)
 					if (ii->second.length() > 0) {
 						char tmp[256];
 						Utils::scopy(tmp,sizeof(tmp),ii->second.c_str());
@@ -389,6 +397,7 @@ public:
 						_bindings[_bindingCount].udpSock = udps;
 						_bindings[_bindingCount].tcpListenSock = tcps;
 						_bindings[_bindingCount].address = ii->first;
+						phy.setIfName(udps,(char*)ii->second.c_str(),(int)ii->second.length());
 						++_bindingCount;
 					}
 				} else {
@@ -456,7 +465,15 @@ public:
 		return false;
 	}
 
+	inline std::set<std::string> getLinkInterfaceNames()
+	{
+		Mutex::Lock _l(_lock);
+		return linkIfNames;
+	}
+
 private:
+
+	std::set<std::string> linkIfNames;
 	_Binding _bindings[ZT_BINDER_MAX_BINDINGS];
 	std::atomic<unsigned int> _bindingCount;
 	Mutex _lock;

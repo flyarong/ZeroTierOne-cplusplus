@@ -19,9 +19,9 @@ Since ZeroTier nodes are mobile and do not need static IPs, implementing high av
 
 ZeroTier network controllers can easily be run in Docker or other container systems. Since containers do not need to actually join networks, extra privilege options like "--device=/dev/net/tun --privileged" are not needed. You'll just need to map the local JSON API port of the running controller and allow it to access the Internet (over UDP/9993 at a minimum) so things can reach and query it.
 
-### RethinkDB Database Implementation
+### PostgreSQL Database Implementation
 
-The default controller stores its data in the filesystem in `controller.d` under ZeroTier's home folder. There's an alternative implementation that stores data in RethinkDB that can be built with `make central-controller`. Right now this is only guaranteed to build and run on Linux and is designed for use with [ZeroTier Central](https://my.zerotier.com/). You're welcome to use it but we don't "officially" support it for end-user use and it could change at any time.
+The default controller stores its data in the filesystem in `controller.d` under ZeroTier's home folder. There's an alternative implementation that stores data in PostgreSQL that can be built with `make central-controller`. Right now this is only guaranteed to build and run on Centos 7 Linux with PostgreSQL 10 installed via the [PostgreSQL Yum Repository](https://www.postgresql.org/download/linux/redhat/) and is designed for use with [ZeroTier Central](https://my.zerotier.com/). You're welcome to use it but we don't "officially" support it for end-user use and it could change at any time.
 
 ### Upgrading from Older (1.1.14 or earlier) Versions
 
@@ -92,7 +92,6 @@ Example:
 | v6AssignMode          | object        | IPv6 management and assign options (see below)    | YES      |
 | mtu                   | integer       | Network MTU (default: 2800)                       | YES      |
 | multicastLimit        | integer       | Maximum recipients for a multicast packet         | YES      |
-| creationTime          | integer       | Time network was first created                    | no       |
 | revision              | integer       | Network config revision counter                   | no       |
 | routes                | array[object] | Managed IPv4 and IPv6 routes; see below           | YES      |
 | ipAssignmentPools     | array[object] | IP auto-assign ranges; see below                  | YES      |
@@ -134,6 +133,26 @@ IPv6 ranges work just like IPv4 ranges and look like this:
 (You can POST a shortened-form IPv6 address but the API will always report back un-shortened canonical form addresses.)
 
 That defines a range within network `fd00:feed:feed:beef::/64` that contains up to 2^64 addresses. If an IPv6 range is large enough, the controller will assign addresses by placing each member's device ID into the address in a manner similar to the RFC4193 and 6PLANE modes. Otherwise it will assign addresses at random.
+
+**Managed Route object format:**
+
+| Field                 | Type          | Description                                       |
+| --------------------- | ------------- | ------------------------------------------------- |
+| target                | string        | Subnet in CIDR notation                           |
+| via                   | string/null   | Next hop router IP address                        |
+
+Managed Route objects look like this:
+
+      {
+        "target": "10.147.20.0/24"
+      }
+
+or 
+
+      {
+        "target": "192.168.168.0/24",
+        "via": "10.147.20.1"
+      }
 
 **Rule object format:**
 

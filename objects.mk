@@ -1,4 +1,5 @@
 CORE_OBJS=\
+	node/AES.o \
 	node/C25519.o \
 	node/Capability.o \
 	node/CertificateOfMembership.o \
@@ -24,13 +25,18 @@ CORE_OBJS=\
 	node/Tag.o \
 	node/Topology.o \
 	node/Trace.o \
-	node/Utils.o
+	node/Utils.o \
+	node/Bond.o \
+	node/BondController.o
 
 ONE_OBJS=\
 	controller/EmbeddedNetworkController.o \
+	controller/DBMirrorSet.o \
 	controller/DB.o \
 	controller/FileDB.o \
-	controller/RethinkDB.o \
+	controller/LFDB.o \
+	controller/PostgreSQL.o \
+	osdep/EthernetTap.o \
 	osdep/ManagedRoute.o \
 	osdep/Http.o \
 	osdep/OSUtils.o \

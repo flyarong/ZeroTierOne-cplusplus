@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include <stdint.h>
 
@@ -35,7 +22,7 @@ namespace ZeroTier {
 bool NetworkConfig::toDictionary(Dictionary<ZT_NETWORKCONFIG_DICT_CAPACITY> &d,bool includeLegacy) const
 {
 	Buffer<ZT_NETWORKCONFIG_DICT_CAPACITY> *tmp = new Buffer<ZT_NETWORKCONFIG_DICT_CAPACITY>();
-	char tmp2[128];
+	char tmp2[128] = {0};
 
 	try {
 		d.clear();
@@ -97,7 +84,7 @@ bool NetworkConfig::toDictionary(Dictionary<ZT_NETWORKCONFIG_DICT_CAPACITY> &d,b
 					if (((int)lastrt < 32)||(lastrt == ZT_NETWORK_RULE_MATCH_ETHERTYPE)) {
 						if (ets.length() > 0)
 							ets.push_back(',');
-						char tmp2[16];
+						char tmp2[16] = {0};
 						ets.append(Utils::hex((uint16_t)et,tmp2));
 					}
 					et = 0;
@@ -117,7 +104,7 @@ bool NetworkConfig::toDictionary(Dictionary<ZT_NETWORKCONFIG_DICT_CAPACITY> &d,b
 				if ((this->specialists[i] & ZT_NETWORKCONFIG_SPECIALIST_TYPE_ACTIVE_BRIDGE) != 0) {
 					if (ab.length() > 0)
 						ab.push_back(',');
-					char tmp2[16];
+					char tmp2[16] = {0};
 					ab.append(Address(this->specialists[i]).toString(tmp2));
 				}
 			}
@@ -189,6 +176,12 @@ bool NetworkConfig::toDictionary(Dictionary<ZT_NETWORKCONFIG_DICT_CAPACITY> &d,b
 			}
 		}
 
+		tmp->clear();
+		DNS::serializeDNS(*tmp, &dns);
+		if (tmp->size()) {
+			if (!d.add(ZT_NETWORKCONFIG_DICT_KEY_DNS,*tmp)) return false;
+		}
+
 		delete tmp;
 	} catch ( ... ) {
 		delete tmp;
@@ -200,10 +193,11 @@ bool NetworkConfig::toDictionary(Dictionary<ZT_NETWORKCONFIG_DICT_CAPACITY> &d,b
 
 bool NetworkConfig::fromDictionary(const Dictionary<ZT_NETWORKCONFIG_DICT_CAPACITY> &d)
 {
+	static const NetworkConfig NIL_NC;
 	Buffer<ZT_NETWORKCONFIG_DICT_CAPACITY> *tmp = new Buffer<ZT_NETWORKCONFIG_DICT_CAPACITY>();
 
 	try {
-		memset(this,0,sizeof(NetworkConfig));
+		*this = NIL_NC;
 
 		// Fields that are always present, new or old
 		this->networkId = d.getUI(ZT_NETWORKCONFIG_DICT_KEY_NETWORK_ID,0);
@@ -232,7 +226,7 @@ bool NetworkConfig::fromDictionary(const Dictionary<ZT_NETWORKCONFIG_DICT_CAPACI
 
 		if (d.getUI(ZT_NETWORKCONFIG_DICT_KEY_VERSION,0) < 6) {
 	#ifdef ZT_SUPPORT_OLD_STYLE_NETCONF
-			char tmp2[1024];
+			char tmp2[1024] = {0};
 
 			// Decode legacy fields if version is old
 			if (d.getB(ZT_NETWORKCONFIG_DICT_KEY_ENABLE_BROADCAST_OLD))
@@ -365,6 +359,11 @@ bool NetworkConfig::fromDictionary(const Dictionary<ZT_NETWORKCONFIG_DICT_CAPACI
 				this->ruleCount = 0;
 				unsigned int p = 0;
 				Capability::deserializeRules(*tmp,p,this->rules,this->ruleCount,ZT_MAX_NETWORK_RULES);
+			}
+
+			if (d.get(ZT_NETWORKCONFIG_DICT_KEY_DNS, *tmp)) {
+				unsigned int p = 0;
+				DNS::deserializeDNS(*tmp, p, &dns);
 			}
 		}
 

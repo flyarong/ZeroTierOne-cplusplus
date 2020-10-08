@@ -1,6 +1,64 @@
 ZeroTier Release Notes
 ======
 
+# 2020-10-05 -- Version 1.5.0 (actually 1.6.0-beta1)
+
+Version 1.6.0 (1.5.0 is a beta!) is a significant release that incorporates a number of back-ported fixes and features from the ZeroTier 2.0 tree.
+
+Major new features are:
+
+ * **Multipath support** with modes modeled after the Linux kernel's bonding driver. This includes active-passive and active-active modes with fast failover and load balancing. See section 2.1.5 of the manual.
+ * **DNS configuration** push from network controllers to end nodes, with locally configurable permissions for whether or not push is allowed.
+ * **AES-GMAC-SIV** encryption mode, which is both somewhat more secure and significantly faster than the old Salsa20/12-Poly1305 mode on hardware that supports AES acceleration. This includes virtually all X86-64 chips and most ARM64. This mode is based on AES-SIV and has been audited by Trail of Bits to ensure that it is equivalent security-wise.
+
+Known issues that are not yet fixed in this beta:
+
+ * Some Mac users have reported periods of 100% CPU in kernel_task and connection instability after leaving networks that have been joined for a period of time, or needing to kill ZeroTier and restart it to finish leaving a network. This doesn't appear to affect all users and we haven't diagnosed the root cause yet.
+ * The service sometimes hangs on shutdown requiring a kill -9. This also does not affect all systems or users.
+ * AES hardware acceleration is not yet supported on 32-bit ARM, PowerPC (32 or 64), or MIPS (32 or 64) systems. Currently supported are X86-64 and ARM64/AARCH64 with crypto extensions.
+ * Some users have reported multicast/broadcast outages on networks lasting up to 30 seconds. Still investigating.
+
+We're trying to fix all these issues before the 1.6.0 release. Stay tuned.
+
+# 2019-08-30 -- Version 1.4.6
+
+ * Update default root list to latest
+ * ARM32 platform build and flag fixes
+ * Add a clarification line to LICENSE.txt
+ * Fix license message in CLI
+ * Windows service now looks for service command line arguments
+ * Fixed a bug that could cause excessive queued multicasts
+
+# 2019-08-23 -- Version 1.4.4
+
+ * Change license from GPL3 to BSL 1.1, see LICENSE.txt
+ * Fix an issue with the "ipauth" rule and auto-generated unforgeable IPv6 addresses
+ * Fix socket/bind errors setting IPs and routes on Linux
+
+# 2019-08-12 -- Version 1.4.2
+
+ * Fix high CPU use bug on some platforms
+ * Fix issues with PostgreSQL controller DB (only affects Central)
+ * Restore backward compatibility with MacOS versions prior to 10.13
+
+# 2019-07-29 -- Version 1.4.0
+
+### Major Changes
+
+ * Mac version no longer requires a kernel extension, instead making use of the [feth interfaces](https://apple.stackexchange.com/questions/337715/fake-ethernet-interfaces-feth-if-fake-anyone-ever-seen-this).
+ * Added support for concurrent multipath (multiple paths at once) with traffic weighting by link quality and faster recovery from lost links.
+ * Added under-the-hood support for QoS (not yet exposed) that will eventually be configurable via our rules engine.
+
+### Minor Changes and Bug Fixes
+
+ * Experimental controller DB driver for [LF](https://github.com/zerotier/lf) to store network controller data (LFDB.cpp / LFDB.hpp).
+ * Modified credential push and direct path push timings and algorithms to somewhat reduce "chattiness" of the protocol when idle. More radical background overhead reductions will have to wait for the 2.x line.
+ * Removed our beta/half-baked integration of Central with the Windows UI. We're going to do a whole new UI of some kind in the future at least for Windows and Mac.
+ * Fixed stack overflow issues on Linux versions using musl libc.
+ * Fixed some alignment problems reported on ARM and ARM64, but some reports we could not reproduce so please report any issues with exact chip, OS/distro, and ZeroTier version in use.
+ * Fixed numerous other small issues and bugs such as ARM alignment issues causing crashes on some devices.
+ * Windows now sets the adapter name such that it is consistent in both the Windows UI and command line utilities.
+
 # 2018-07-27 -- Version 1.2.12
 
  * Fixed a bug that caused exits to take a long time on Mac due to huge numbers of redundant attempts to delete managed routes.
@@ -43,7 +101,7 @@ ZeroTier Release Notes
     * Fixed two very rare multithreading issues that were only observed on certain systems
  * Platform-Specific Changes
     * MacOS
-        * Installer now loads the kernel extension right away so that High Sierra users will see the prompt to authorize it. This is done in the "Security & Privacy" preference pane and must be done driectly on the console (not via remote desktop). On High Sierra and newer kexts must be authorized at the console via security settings system preferences pane.
+        * Installer now loads the kernel extension right away so that High Sierra users will see the prompt to authorize it. This is done in the "Security & Privacy" preference pane and must be done directly on the console (not via remote desktop). On High Sierra and newer kexts must be authorized at the console via security settings system preferences pane.
     * Windows
         * The Windows installer should now install the driver without requiring a special prompt in most cases. This should make it easier for our packages to be accepted into and updated in the Chocolatey repository and should make it easier to perform remote installs across groups of machines using IT management and provisioning tools.
         * The Windows official packages are now signed with an EV certificate (with hardware key).
@@ -85,7 +143,7 @@ The largest new feature in 1.2.0, and the product of many months of work, is our
 
 Rules allow you to filter packets on your network and vector traffic to security observers. Security observation can be performed in-band using REDIRECT or out of band using TEE.
 
-Tags and capabilites provide advanced methods for implementing fine grained permission structures and micro-segmentation schemes without bloating the size and complexity of your rules table.
+Tags and capabilities provide advanced methods for implementing fine grained permission structures and micro-segmentation schemes without bloating the size and complexity of your rules table.
 
 See the [rules engine announcement blog post](https://www.zerotier.com/blog/?p=927) for an in-depth discussion of theory and implementation. The [manual](https://www.zerotier.com/manual.shtml) contains detailed information on rule, tag, and capability use, and the `rule-compiler/` subfolder of the ZeroTier source tree contains a JavaScript function to compile rules in our human-readable rule definition language into rules suitable for import into a network controller. (ZeroTier Central uses this same script to compile rules on [my.zerotier.com](https://my.zerotier.com/).)
 
@@ -168,7 +226,7 @@ A special kind of public network called an ad-hoc network may be accessed by joi
     | Start of port range (hex)
     Reserved ZeroTier address prefix indicating a controller-less network
 
-Ad-hoc networks are public (no access control) networks that have no network controller. Instead their configuration and other credentials are generated locally. Ad-hoc networks permit only IPv6 UDP and TCP unicast traffic (no multicast or broadcast) using 6plane format NDP-emulated IPv6 addresses. In addition an ad-hoc network ID encodes an IP port range. UDP packets and TCP SYN (connection open) packets are only allowed to desintation ports within the encoded range.
+Ad-hoc networks are public (no access control) networks that have no network controller. Instead their configuration and other credentials are generated locally. Ad-hoc networks permit only IPv6 UDP and TCP unicast traffic (no multicast or broadcast) using 6plane format NDP-emulated IPv6 addresses. In addition an ad-hoc network ID encodes an IP port range. UDP packets and TCP SYN (connection open) packets are only allowed to destination ports within the encoded range.
 
 For example `ff00160016000000` is an ad-hoc network allowing only SSH, while `ff0000ffff000000` is an ad-hoc network allowing any UDP or TCP port.
 
@@ -183,7 +241,7 @@ If you have data in an old SQLite3 controller we've included a NodeJS script in 
 ## Major Bug Fixes in 1.2.0
 
  * **The Windows HyperV 100% CPU bug is FINALLY DEAD**: This long-running problem turns out to have been an issue with Windows itself, but one we were triggering by placing invalid data into the Windows registry. Microsoft is aware of the issue but we've also fixed the triggering problem on our side. ZeroTier should now co-exist quite well with HyperV and should now be able to be bridged with a HyperV virtual switch.
- * **Segmenation faults on musl-libc based Linux systems**: Alpine Linux and some embedded Linux systems that use musl libc (a minimal libc) experienced segmentation faults. These were due to a smaller default stack size. A work-around that sets the stack size for new threads has been added.
+ * **Segmentation faults on musl-libc based Linux systems**: Alpine Linux and some embedded Linux systems that use musl libc (a minimal libc) experienced segmentation faults. These were due to a smaller default stack size. A work-around that sets the stack size for new threads has been added.
  * **Windows firewall blocks local JSON API**: On some Windows systems the firewall likes to block 127.0.0.1:9993 for mysterious reasons. This is now fixed in the installer via the addition of another firewall exemption rule.
  * **UI crash on embedded Windows due to missing fonts**: The MSI installer now ships fonts and will install them if they are not present, so this should be fixed.
 

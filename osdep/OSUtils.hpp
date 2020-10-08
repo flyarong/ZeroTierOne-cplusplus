@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_OSUTILS_HPP
 #define ZT_OSUTILS_HPP
@@ -55,7 +42,9 @@
 #endif
 #endif
 
+#ifndef OMIT_JSON_SUPPORT
 #include "../ext/json/json.hpp"
+#endif
 
 namespace ZeroTier {
 
@@ -207,6 +196,20 @@ public:
 	static std::vector<InetAddress> resolve(const char *name);
 
 	/**
+	 * @return Current time in a human-readable format
+	 */
+	static inline std::string humanReadableTimestamp()
+	{
+		time_t rawtime;
+		struct tm * timeinfo;
+		char buffer [80];
+		time (&rawtime);
+		timeinfo = localtime (&rawtime);
+		strftime (buffer,80,"%F %T",timeinfo);
+		return std::string(buffer);
+	}
+
+	/**
 	 * @return Current time in milliseconds since epoch
 	 */
 	static inline int64_t now()
@@ -222,11 +225,7 @@ public:
 		return (int64_t)( ((tmp.QuadPart - 116444736000000000LL) / 10000L) + st.wMilliseconds );
 #else
 		struct timeval tv;
-#ifdef __LINUX__
-		syscall(SYS_gettimeofday,&tv,0); /* fix for musl libc broken gettimeofday bug */
-#else
 		gettimeofday(&tv,(struct timezone *)0);
-#endif
 		return ( (1000LL * (int64_t)tv.tv_sec) + (int64_t)(tv.tv_usec / 1000) );
 #endif
 	};
@@ -284,13 +283,16 @@ public:
 	 */
 	static std::string platformDefaultHomePath();
 
+#ifndef OMIT_JSON_SUPPORT
 	static nlohmann::json jsonParse(const std::string &buf);
 	static std::string jsonDump(const nlohmann::json &j,int indentation = 1);
 	static uint64_t jsonInt(const nlohmann::json &jv,const uint64_t dfl);
+	static double jsonDouble(const nlohmann::json &jv,const double dfl);
 	static uint64_t jsonIntHex(const nlohmann::json &jv,const uint64_t dfl);
 	static bool jsonBool(const nlohmann::json &jv,const bool dfl);
 	static std::string jsonString(const nlohmann::json &jv,const char *dfl);
 	static std::string jsonBinFromHex(const nlohmann::json &jv);
+#endif // OMIT_JSON_SUPPORT
 
 private:
 	static const unsigned char TOLOWER_TABLE[256];

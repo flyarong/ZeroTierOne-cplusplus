@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_MANAGEDROUTE_HPP
 #define ZT_MANAGEDROUTE_HPP
@@ -49,14 +36,20 @@ class ManagedRoute
 	friend class SharedPtr<ManagedRoute>;
 
 public:
-	ManagedRoute(const InetAddress &target,const InetAddress &via,const char *device)
+	ManagedRoute(const InetAddress &target,const InetAddress &via,const InetAddress &src,const char *device)
 	{
 		_target = target;
 		_via = via;
+		_src = src;
 		if (via.ss_family == AF_INET)
 			_via.setPort(32);
 		else if (via.ss_family == AF_INET6)
 			_via.setPort(128);
+		if (src.ss_family == AF_INET) {
+			_src.setPort(32);
+		} else if (src.ss_family == AF_INET6) {
+			_src.setPort(128);
+		}
 		Utils::scopy(_device,sizeof(_device),device);
 		_systemDevice[0] = (char)0;
 	}
@@ -87,6 +80,7 @@ public:
 
 	inline const InetAddress &target() const { return _target; }
 	inline const InetAddress &via() const { return _via; }
+	inline const InetAddress &src() const { return _src; }
 	inline const char *device() const { return _device; }
 
 private:
@@ -95,6 +89,7 @@ private:
 
 	InetAddress _target;
 	InetAddress _via;
+	InetAddress _src;
 	InetAddress _systemVia; // for route overrides
 	std::map<InetAddress,bool> _applied; // routes currently applied
 	char _device[128];

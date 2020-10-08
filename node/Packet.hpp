@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_N_PACKET_HPP
 #define ZT_N_PACKET_HPP
@@ -39,37 +26,43 @@
 #include "Address.hpp"
 #include "Poly1305.hpp"
 #include "Salsa20.hpp"
+#include "AES.hpp"
 #include "Utils.hpp"
 #include "Buffer.hpp"
 
 /**
  * Protocol version -- incremented only for major changes
  *
- * 1 - 0.2.0 ... 0.2.5
- * 2 - 0.3.0 ... 0.4.5
- *   + Added signature and originating peer to multicast frame
- *   + Double size of multicast frame bloom filter
- * 3 - 0.5.0 ... 0.6.0
- *   + Yet another multicast redesign
- *   + New crypto completely changes key agreement cipher
- * 4 - 0.6.0 ... 1.0.6
- *   + BREAKING CHANGE: New identity format based on hashcash design
- * 5 - 1.1.0 ... 1.1.5
- *   + Supports echo
- *   + Supports in-band world (root server definition) updates
- *   + Clustering! (Though this will work with protocol v4 clients.)
- *   + Otherwise backward compatible with protocol v4
- * 6 - 1.1.5 ... 1.1.10
- *   + Network configuration format revisions including binary values
- * 7 - 1.1.10 ... 1.1.17
- *   + Introduce trusted paths for local SDN use
- * 8 - 1.1.17 ... 1.2.0
- *   + Multipart network configurations for large network configs
- *   + Tags and Capabilities
- *   + Inline push of CertificateOfMembership deprecated
- * 9 - 1.2.0 ... CURRENT
+ * 1  - 0.2.0 ... 0.2.5
+ * 2  - 0.3.0 ... 0.4.5
+ *    + Added signature and originating peer to multicast frame
+ *    + Double size of multicast frame bloom filter
+ * 3  - 0.5.0 ... 0.6.0
+ *    + Yet another multicast redesign
+ *    + New crypto completely changes key agreement cipher
+ * 4  - 0.6.0 ... 1.0.6
+ *    + BREAKING CHANGE: New identity format based on hashcash design
+ * 5  - 1.1.0 ... 1.1.5
+ *    + Supports echo
+ *    + Supports in-band world (root server definition) updates
+ *    + Clustering! (Though this will work with protocol v4 clients.)
+ *    + Otherwise backward compatible with protocol v4
+ * 6  - 1.1.5 ... 1.1.10
+ *    + Network configuration format revisions including binary values
+ * 7  - 1.1.10 ... 1.1.17
+ *    + Introduce trusted paths for local SDN use
+ * 8  - 1.1.17 ... 1.2.0
+ *    + Multipart network configurations for large network configs
+ *    + Tags and Capabilities
+ *    + Inline push of CertificateOfMembership deprecated
+ * 9  - 1.2.0 ... 1.2.14
+ * 10 - 1.4.0 ... 1.4.6
+ * 11 - 1.4.7 ... 1.4.8
+ *    + Multipath capability and load balancing (beta)
+ * 12 - 1.4.8 ... CURRENT (1.4 series)
+ *    + AES-GMAC-SIV backported for faster peer-to-peer crypto
  */
-#define ZT_PROTO_VERSION 9
+#define ZT_PROTO_VERSION 12
 
 /**
  * Minimum supported protocol version
@@ -106,6 +99,21 @@
  * Curve25519 elliptic curve Diffie-Hellman.
  */
 #define ZT_PROTO_CIPHER_SUITE__C25519_POLY1305_SALSA2012 1
+
+/**
+ * AES-GMAC-SIV backported from 2.x
+ */
+#define ZT_PROTO_CIPHER_SUITE__AES_GMAC_SIV 3
+
+/**
+ * AES-GMAC-SIV first of two keys
+ */
+#define ZT_KBKDF_LABEL_AES_GMAC_SIV_K0 '0'
+
+/**
+ * AES-GMAC-SIV second of two keys
+ */
+#define ZT_KBKDF_LABEL_AES_GMAC_SIV_K1 '1'
 
 /**
  * Cipher suite: NONE
@@ -150,7 +158,7 @@
  *
  * In cryptography, a "break" means something different from what it means in
  * common discussion. If a cipher is 256 bits strong and someone finds a way
- * to reduce key search to 254 bits, this constitues a "break" in the academic
+ * to reduce key search to 254 bits, this constitutes a "break" in the academic
  * literature. 254 bits is still far beyond what can be leveraged to accomplish
  * a "break" as most people would understand it -- the actual decryption and
  * reading of traffic.
@@ -249,7 +257,7 @@
  */
 #define ZT_PROTO_MIN_FRAGMENT_LENGTH ZT_PACKET_FRAGMENT_IDX_PAYLOAD
 
-// Field incides for parsing verbs -------------------------------------------
+// Field indices for parsing verbs -------------------------------------------
 
 // Some verbs have variable-length fields. Those aren't fully defined here
 // yet-- instead they are parsed using relative indexes in IncomingPacket.
@@ -419,7 +427,7 @@ public:
 
 		template<unsigned int C2>
 		Fragment(const Buffer<C2> &b) :
-	 		Buffer<ZT_PROTO_MAX_PACKET_LENGTH>(b)
+			Buffer<ZT_PROTO_MAX_PACKET_LENGTH>(b)
 		{
 		}
 
@@ -734,7 +742,7 @@ public:
 		 * Credentials can be for any number of networks.
 		 *
 		 * The use of a zero byte to terminate the COM section is for legacy
-		 * backward compatiblity. Newer fields are prefixed with a length.
+		 * backward compatibility. Newer fields are prefixed with a length.
 		 *
 		 * OK/ERROR are not generated.
 		 */
@@ -751,11 +759,11 @@ public:
 		 * This message requests network configuration from a node capable of
 		 * providing it.
 		 *
-		 * Respones to this are always whole configs intended for the recipient.
+		 * Responses to this are always whole configs intended for the recipient.
 		 * For patches and other updates a NETWORK_CONFIG is sent instead.
 		 *
 		 * It would be valid and correct as of 1.2.0 to use NETWORK_CONFIG always,
-		 * but OK(NTEWORK_CONFIG_REQUEST) should be sent for compatibility.
+		 * but OK(NETWORK_CONFIG_REQUEST) should be sent for compatibility.
 		 *
 		 * OK response payload:
 		 *   <[8] 64-bit network ID>
@@ -884,7 +892,7 @@ public:
 		 *   <[6] MAC address of multicast group>
 		 *   <[4] 32-bit ADI for multicast group>
 		 *   <[1] flags>
-		 *  [<[...] network certficate of membership (DEPRECATED)>]
+		 *  [<[...] network certificate of membership (DEPRECATED)>]
 		 *  [<[...] implicit gather results if flag 0x01 is set>]
 		 *
 		 * OK flags (same bits as request flags):
@@ -930,7 +938,54 @@ public:
 		 */
 		VERB_PUSH_DIRECT_PATHS = 0x10,
 
-		// 0x11, 0x12 -- deprecated
+		// 0x11 -- deprecated
+
+		/**
+		 * An acknowledgment of receipt of a series of recent packets from another
+		 * peer. This is used to calculate relative throughput values and to detect
+		 * packet loss. Only VERB_FRAME and VERB_EXT_FRAME packets are counted.
+		 *
+		 * ACK response format:
+		 *  <[4] 32-bit number of bytes received since last ACK>
+		 *
+		 * Upon receipt of this packet, the local peer will verify that the correct
+		 * number of bytes were received by the remote peer. If these values do
+		 * not agree that could be an indication of packet loss.
+		 *
+		 * Additionally, the local peer knows the interval of time that has
+		 * elapsed since the last received ACK. With this information it can compute
+		 * a rough estimate of the current throughput.
+		 *
+		 * This is sent at a maximum rate of once per every ZT_QOS_ACK_INTERVAL
+		 */
+		VERB_ACK = 0x12,
+
+		/**
+		 * A packet containing timing measurements useful for estimating path quality.
+		 * Composed of a list of <packet ID:internal sojourn time> pairs for an
+		 * arbitrary set of recent packets. This is used to sample for latency and
+		 * packet delay variance (PDV, "jitter").
+		 *
+		 * QoS record format:
+		 *
+		 *  <[8] 64-bit packet ID of previously-received packet>
+		 *  <[1] 8-bit packet sojourn time>
+		 *  <...repeat until end of max 1400 byte packet...>
+		 *
+		 * The number of possible records per QoS packet is: (1400 * 8) / 72 = 155
+		 * This packet should be sent very rarely (every few seconds) as it can be
+		 * somewhat large if the connection is saturated. Future versions might use
+		 * a bloom table to probabilistically determine these values in a vastly
+		 * more space-efficient manner.
+		 *
+		 * Note: The 'internal packet sojourn time' is a slight misnomer as it is a
+		 * measure of the amount of time between when a packet was received and the
+		 * egress time of its tracking QoS packet.
+		 *
+		 * This is sent at a maximum rate of once per every
+		 * ZT_QOS_MEASUREMENT_INTERVAL
+		 */
+		VERB_QOS_MEASUREMENT = 0x13,
 
 		/**
 		 * A message with arbitrary user-definable content:
@@ -954,14 +1009,41 @@ public:
 		 *
 		 * This message contains a remote trace event. Remote trace events can
 		 * be sent to observers configured at the network level for those that
-		 * pertain directly to actiity on a network, or to global observers if
+		 * pertain directly to activity on a network, or to global observers if
 		 * locally configured.
 		 *
 		 * The instance ID is a random 64-bit value generated by each ZeroTier
 		 * node on startup. This is helpful in identifying traces from different
 		 * members of a cluster.
 		 */
-		VERB_REMOTE_TRACE = 0x15
+		VERB_REMOTE_TRACE = 0x15,
+
+		/**
+		 * A request to a peer to use a specific path in a multi-path scenario:
+		 * <[2] 16-bit unsigned integer that encodes a path choice utility>
+		 *
+		 * This is sent when a node operating in multipath mode observes that
+		 * its inbound and outbound traffic aren't going over the same path. The
+		 * node will compute its perceived utility for using its chosen outbound
+		 * path and send this to a peer in an attempt to petition it to send
+		 * its traffic over this same path.
+		 *
+		 * Scenarios:
+		 *
+		 * (1) Remote peer utility is GREATER than ours:
+		 *     - Remote peer will refuse the petition and continue using current path
+		 * (2) Remote peer utility is LESS than than ours:
+		 *     - Remote peer will accept the petition and switch to our chosen path
+		 * (3) Remote peer utility is EQUAL to our own:
+		 *     - To prevent confusion and flapping, both side will agree to use the
+		 *       numerical values of their identities to determine which path to use.
+		 *       The peer with the greatest identity will win.
+		 *
+		 * If a node petitions a peer repeatedly with no effect it will regard
+		 * that as a refusal by the remote peer, in this case if the utility is
+		 * negligible it will voluntarily switch to the remote peer's chosen path.
+		 */
+		VERB_PATH_NEGOTIATION_REQUEST = 0x16
 	};
 
 	/**
@@ -999,7 +1081,7 @@ public:
 
 	template<unsigned int C2>
 	Packet(const Buffer<C2> &b) :
- 		Buffer<ZT_PROTO_MAX_PACKET_LENGTH>(b)
+		Buffer<ZT_PROTO_MAX_PACKET_LENGTH>(b)
 	{
 	}
 
@@ -1232,8 +1314,9 @@ public:
 	 *
 	 * @param key 32-byte key
 	 * @param encryptPayload If true, encrypt packet payload, else just MAC
+	 * @param aesKeys If non-NULL these are the two keys for AES-GMAC-SIV
 	 */
-	void armor(const void *key,bool encryptPayload);
+	void armor(const void *key,bool encryptPayload,const AES aesKeys[2]);
 
 	/**
 	 * Verify and (if encrypted) decrypt packet
@@ -1243,15 +1326,16 @@ public:
 	 * address and MAC field match a trusted path.
 	 *
 	 * @param key 32-byte key
+	 * @param aesKeys If non-NULL these are the two keys for AES-GMAC-SIV
 	 * @return False if packet is invalid or failed MAC authenticity check
 	 */
-	bool dearmor(const void *key);
+	bool dearmor(const void *key,const AES aesKeys[2]);
 
 	/**
 	 * Encrypt/decrypt a separately armored portion of a packet
 	 *
 	 * This is currently only used to mask portions of HELLO as an extra
-	 * security precation since most of that message is sent in the clear.
+	 * security precaution since most of that message is sent in the clear.
 	 *
 	 * This must NEVER be used more than once in the same packet, as doing
 	 * so will result in re-use of the same key stream.

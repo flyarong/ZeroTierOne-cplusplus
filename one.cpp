@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +28,9 @@
 #include <lmcons.h>
 #include <newdev.h>
 #include <atlbase.h>
+#include <iphlpapi.h>
+#include <iomanip>
+#include <shlobj.h>
 #include "osdep/WindowsEthernetTap.hpp"
 #include "windows/ZeroTierOne/ServiceInstaller.h"
 #include "windows/ZeroTierOne/ServiceBase.h"
@@ -58,8 +48,15 @@
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <net/if.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <ifaddrs.h>
+#include <sys/ioctl.h>
+#ifndef ZT_NO_CAPABILITIES
 #include <linux/capability.h>
 #include <linux/securebits.h>
+#endif
 #endif
 #endif
 
@@ -67,6 +64,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <sstream>
+#include <algorithm>
 
 #include "version.h"
 #include "include/ZeroTierOne.h"
@@ -82,9 +80,19 @@
 #include "osdep/Http.hpp"
 #include "osdep/Thread.hpp"
 
+#include "node/BondController.hpp"
+
 #include "service/OneService.hpp"
 
 #include "ext/json/json.hpp"
+
+#ifdef __APPLE__
+#include <SystemConfiguration/SystemConfiguration.h>
+#include <CoreServices/CoreServices.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <ifaddrs.h>
+#endif
 
 #define ZT_PID_PATH "zerotier-one.pid"
 
@@ -93,12 +101,8 @@ using namespace ZeroTier;
 static OneService *volatile zt1Service = (OneService *)0;
 
 #define PROGRAM_NAME "ZeroTier One"
-#define COPYRIGHT_NOTICE "Copyright (c) 2011-2018 ZeroTier, Inc."
-#define LICENSE_GRANT \
-	"This is free software: you may copy, modify, and/or distribute this" ZT_EOL_S \
-	"work under the terms of the GNU General Public License, version 3 or" ZT_EOL_S \
-	"later as published by the Free Software Foundation." ZT_EOL_S \
-	"No warranty expressed or implied." ZT_EOL_S
+#define COPYRIGHT_NOTICE "Copyright (c) 2020 ZeroTier, Inc."
+#define LICENSE_GRANT "Licensed under the ZeroTier BSL 1.1 (see LICENSE.txt)"
 
 /****************************************************************************/
 /* zerotier-cli personality                                                 */
@@ -127,14 +131,22 @@ static void cliPrintHelp(const char *pn,FILE *out)
 	fprintf(out,ZT_EOL_S"Available commands:" ZT_EOL_S);
 	fprintf(out,"  info                    - Display status info" ZT_EOL_S);
 	fprintf(out,"  listpeers               - List all peers" ZT_EOL_S);
+	fprintf(out,"  peers                   - List all peers (prettier)" ZT_EOL_S);
 	fprintf(out,"  listnetworks            - List all networks" ZT_EOL_S);
-	fprintf(out,"  join <network>          - Join a network" ZT_EOL_S);
-	fprintf(out,"  leave <network>         - Leave a network" ZT_EOL_S);
-	fprintf(out,"  set <network> <setting> - Set a network setting" ZT_EOL_S);
-	fprintf(out,"  get <network> <setting> - Get a network setting" ZT_EOL_S);
+	fprintf(out,"  join <network ID>          - Join a network" ZT_EOL_S);
+	fprintf(out,"  leave <network ID>         - Leave a network" ZT_EOL_S);
+	fprintf(out,"  set <network ID> <setting> - Set a network setting" ZT_EOL_S);
+	fprintf(out,"  get <network ID> <setting> - Get a network setting" ZT_EOL_S);
 	fprintf(out,"  listmoons               - List moons (federated root sets)" ZT_EOL_S);
 	fprintf(out,"  orbit <world ID> <seed> - Join a moon via any member root" ZT_EOL_S);
 	fprintf(out,"  deorbit <world ID>      - Leave a moon" ZT_EOL_S);
+	fprintf(out,"  dump                    - Debug settings dump for support" ZT_EOL_S);
+	fprintf(out,ZT_EOL_S"Available settings:" ZT_EOL_S);
+	fprintf(out,"  Settings to use with [get/set] may include property names from " ZT_EOL_S);
+	fprintf(out,"  the JSON output of \"zerotier-cli -j listnetworks\". Additionally, " ZT_EOL_S);
+	fprintf(out,"  (ip, ip4, ip6, ip6plane, and ip6prefix can be used). For instance:" ZT_EOL_S);
+	fprintf(out,"  zerotier-cli get <network ID> ip6plane will return the 6PLANE address" ZT_EOL_S);
+	fprintf(out,"  assigned to this node." ZT_EOL_S);
 }
 
 static std::string cliFixJsonCRs(const std::string &s)
@@ -237,6 +249,7 @@ static int cli(int argc,char **argv)
 	if (!homeDir.length())
 		homeDir = OneService::platformDefaultHomePath();
 
+	// TODO: cleanup this logic
 	if ((!port)||(!authToken.length())) {
 		if (!homeDir.length()) {
 			fprintf(stderr,"%s: missing port or authentication token and no home directory specified to auto-detect" ZT_EOL_S,argv[0]);
@@ -407,6 +420,139 @@ static int cli(int argc,char **argv)
 			printf("%u %s %s" ZT_EOL_S,scode,command.c_str(),responseBody.c_str());
 			return 1;
 		}
+	} else if (command == "peers") {
+		const unsigned int scode = Http::GET(1024 * 1024 * 16,60000,(const struct sockaddr *)&addr,"/peer",requestHeaders,responseHeaders,responseBody);
+
+		if (scode == 0) {
+			printf("Error connecting to the ZeroTier service: %s\n\nPlease check that the service is running and that TCP port 9993 can be contacted via 127.0.0.1." ZT_EOL_S, responseBody.c_str());
+			return 1;
+		}
+
+		nlohmann::json j;
+		try {
+			j = OSUtils::jsonParse(responseBody);
+		} catch (std::exception &exc) {
+			printf("%u %s invalid JSON response (%s)" ZT_EOL_S,scode,command.c_str(),exc.what());
+			return 1;
+		} catch ( ... ) {
+			printf("%u %s invalid JSON response (unknown exception)" ZT_EOL_S,scode,command.c_str());
+			return 1;
+		}
+
+		if (scode == 200) {
+			if (json) {
+				printf("%s" ZT_EOL_S,OSUtils::jsonDump(j).c_str());
+			} else {
+				printf("200 peers\n<ztaddr>   <ver>  <role> <lat> <link> <lastTX> <lastRX> <path>" ZT_EOL_S);
+				if (j.is_array()) {
+					for(unsigned long k=0;k<j.size();++k) {
+						nlohmann::json &p = j[k];
+						std::string bestPath;
+						nlohmann::json &paths = p["paths"];
+						if (paths.is_array()) {
+							for(unsigned long i=0;i<paths.size();++i) {
+								nlohmann::json &path = paths[i];
+								if (path["preferred"]) {
+									char tmp[256];
+									std::string addr = path["address"];
+									const int64_t now = OSUtils::now();
+									OSUtils::ztsnprintf(tmp,sizeof(tmp),"%-8lld %-8lld %s",now - (int64_t)path["lastSend"],now - (int64_t)path["lastReceive"],addr.c_str());
+									bestPath = std::string("DIRECT ") + tmp;
+									break;
+								}
+							}
+						}
+						if (bestPath.length() == 0) bestPath = "RELAY";
+						char ver[128];
+						int64_t vmaj = p["versionMajor"];
+						int64_t vmin = p["versionMinor"];
+						int64_t vrev = p["versionRev"];
+						if (vmaj >= 0) {
+							OSUtils::ztsnprintf(ver,sizeof(ver),"%lld.%lld.%lld",vmaj,vmin,vrev);
+						} else {
+							ver[0] = '-';
+							ver[1] = (char)0;
+						}
+						printf("%s %-6s %-6s %5d %s" ZT_EOL_S,
+							OSUtils::jsonString(p["address"],"-").c_str(),
+							ver,
+							OSUtils::jsonString(p["role"],"-").c_str(),
+							(int)OSUtils::jsonInt(p["latency"],0),
+							bestPath.c_str());
+					}
+				}
+			}
+			return 0;
+		} else {
+			printf("%u %s %s" ZT_EOL_S,scode,command.c_str(),responseBody.c_str());
+			return 1;
+		}
+	} else if (command == "listbonds") {
+		const unsigned int scode = Http::GET(1024 * 1024 * 16,60000,(const struct sockaddr *)&addr,"/bonds",requestHeaders,responseHeaders,responseBody);
+
+		if (scode == 0) {
+			printf("Error connecting to the ZeroTier service: %s\n\nPlease check that the service is running and that TCP port 9993 can be contacted via 127.0.0.1." ZT_EOL_S, responseBody.c_str());
+			return 1;
+		}
+
+		nlohmann::json j;
+		try {
+			j = OSUtils::jsonParse(responseBody);
+		} catch (std::exception &exc) {
+			printf("%u %s invalid JSON response (%s)" ZT_EOL_S,scode,command.c_str(),exc.what());
+			return 1;
+		} catch ( ... ) {
+			printf("%u %s invalid JSON response (unknown exception)" ZT_EOL_S,scode,command.c_str());
+			return 1;
+		}
+
+		if (scode == 200) {
+			if (json) {
+				printf("%s" ZT_EOL_S,OSUtils::jsonDump(j).c_str());
+			} else {
+				bool bFoundBond = false;
+				printf("    <peer>                        <bondtype>    <status>    <links>" ZT_EOL_S);
+				if (j.is_array()) {
+					for(unsigned long k=0;k<j.size();++k) {
+						nlohmann::json &p = j[k];
+
+						bool isBonded = p["isBonded"];
+						int8_t bondingPolicy = p["bondingPolicy"];
+						bool isHealthy = p["isHealthy"];
+						int8_t numAliveLinks = p["numAliveLinks"];
+						int8_t numTotalLinks = p["numTotalLinks"];
+
+						if (isBonded) {
+							bFoundBond = true;
+							std::string healthStr;
+							if (isHealthy) {
+								healthStr = "HEALTHY";
+							} else {
+								healthStr = "DEGRADED";
+							}
+							std::string policyStr = "none";
+							if (bondingPolicy >= ZT_BONDING_POLICY_NONE && bondingPolicy <= ZT_BONDING_POLICY_BALANCE_AWARE) {
+								policyStr = BondController::getPolicyStrByCode(bondingPolicy);
+							}
+
+							printf("%10s  %32s    %8s        %d/%d" ZT_EOL_S,
+								OSUtils::jsonString(p ["address"],"-").c_str(),
+								policyStr.c_str(),
+								healthStr.c_str(),
+								numAliveLinks,
+								numTotalLinks);
+						}
+					}
+				}
+				if (!bFoundBond) {
+					printf("      NONE\t\t\t\tNONE\t    NONE       NONE" ZT_EOL_S);
+				}
+			}
+			return 0;
+		} else {
+			printf("%u %s %s" ZT_EOL_S,scode,command.c_str(),responseBody.c_str());
+			return 1;
+		}
 	} else if (command == "listnetworks") {
 		const unsigned int scode = Http::GET(1024 * 1024 * 16,60000,(const struct sockaddr *)&addr,"/network",requestHeaders,responseHeaders,responseBody);
 
@@ -466,7 +612,7 @@ static int cli(int argc,char **argv)
 		}
 	} else if (command == "join") {
 		if (arg1.length() != 16) {
-                        printf("invalid network id" ZT_EOL_S);
+			printf("invalid network id" ZT_EOL_S);
 			return 2;
 		}
 		requestHeaders["Content-Type"] = "application/json";
@@ -494,7 +640,7 @@ static int cli(int argc,char **argv)
 		}
 	} else if (command == "leave") {
 		if (arg1.length() != 16) {
-                        printf("invalid network id" ZT_EOL_S);
+			printf("invalid network id" ZT_EOL_S);
 			return 2;
 		}
 		unsigned int scode = Http::DEL(
@@ -592,12 +738,16 @@ static int cli(int argc,char **argv)
 		}
 	} else if (command == "set") {
 		if (arg1.length() != 16) {
-                        printf("invalid network id" ZT_EOL_S);
+			fprintf(stderr,"invalid format: must be a 16-digit (network) ID\n");
+			return 2;
+		}
+		if (!arg2.length()) {
+			fprintf(stderr,"invalid format: include a property name to set\n");
 			return 2;
 		}
 		std::size_t eqidx = arg2.find('=');
 		if (eqidx != std::string::npos) {
-			if ((arg2.substr(0,eqidx) == "allowManaged")||(arg2.substr(0,eqidx) == "allowGlobal")||(arg2.substr(0,eqidx) == "allowDefault")) {
+			if ((arg2.substr(0,eqidx) == "allowManaged")||(arg2.substr(0,eqidx) == "allowGlobal")||(arg2.substr(0,eqidx) == "allowDefault")||(arg2.substr(0,eqidx) == "allowDNS")) {
 				char jsons[1024];
 				OSUtils::ztsnprintf(jsons,sizeof(jsons),"{\"%s\":%s}",
 					arg2.substr(0,eqidx).c_str(),
@@ -630,20 +780,18 @@ static int cli(int argc,char **argv)
 		}
 	} else if (command == "get") {
 		if (arg1.length() != 16) {
-			fprintf(stderr,"invalid network ID format, must be a 16-digit hexidecimal number\n");
+			fprintf(stderr,"invalid format: must be a 16-digit (network) ID\n");
 			return 2;
 		}
-		char jsons[1024], cl[128];
-		OSUtils::ztsnprintf(cl,sizeof(cl),"%u",(unsigned int)strlen(jsons));
-		requestHeaders["Content-Type"] = "application/json";
-		requestHeaders["Content-Length"] = cl;
+		if (!arg2.length()) {
+			fprintf(stderr,"invalid format: include a property name to get\n");
+			return 2;
+		}
 		const unsigned int scode = Http::GET(1024 * 1024 * 16,60000,(const struct sockaddr *)&addr,"/network",requestHeaders,responseHeaders,responseBody);
-
 		if (scode == 0) {
 			printf("Error connecting to the ZeroTier service: %s\n\nPlease check that the service is running and that TCP port 9993 can be contacted via 127.0.0.1." ZT_EOL_S, responseBody.c_str());
 			return 1;
 		}
-
 		nlohmann::json j;
 		try {
 			j = OSUtils::jsonParse(responseBody);
@@ -660,8 +808,56 @@ static int cli(int argc,char **argv)
 				nlohmann::json &n = j[i];
 				if (n.is_object()) {
 					if (n["id"] == arg1) {
-						printf("%s\n", OSUtils::jsonString(n[arg2],"-").c_str());
 						bNetworkFound = true;
+						std::string aa;
+						if (arg2 != "ip" && arg2 != "ip4" && arg2 != "ip6" && arg2 != "ip6plane" && arg2 != "ip6prefix") {
+							aa.append(OSUtils::jsonString(n[arg2],"-")); // Standard network property field
+							if (aa == "-") {
+								printf("error, unknown property name\n");
+								break;
+							}
+							printf("%s\n",aa.c_str());
+							break;
+						}
+						nlohmann::json &assignedAddresses = n["assignedAddresses"];
+						if (assignedAddresses.is_array()) {
+							int matchingIdxs[ZT_MAX_ZT_ASSIGNED_ADDRESSES];
+							int addressCountOfType = 0;
+							for (int k = 0; k<std::min(ZT_MAX_ZT_ASSIGNED_ADDRESSES, (int)assignedAddresses.size());++k) {
+								nlohmann::json &addr = assignedAddresses[k];
+								if ((arg2 == "ip4" && addr.get<std::string>().find(".") != std::string::npos)
+									|| ((arg2.find("ip6") == 0) && addr.get<std::string>().find(":") != std::string::npos)
+									|| (arg2 == "ip")
+									) {
+									matchingIdxs[addressCountOfType++] = k;
+								}
+							}
+							for (int k=0; k<addressCountOfType; k++) {
+								nlohmann::json &addr = assignedAddresses[matchingIdxs[k]];
+								if (!addr.is_string()) {
+									continue;
+								}
+								if (arg2.find("ip6p") == 0) {
+									if (arg2 == "ip6plane") {
+										if (addr.get<std::string>().find("fc") == 0) {
+											aa.append(addr.get<std::string>().substr(0,addr.get<std::string>().find("/")));
+											if (k < addressCountOfType-1) aa.append("\n");
+										}
+									}
+									if (arg2 == "ip6prefix") {
+										if (addr.get<std::string>().find("fc") == 0) {
+											aa.append(addr.get<std::string>().substr(0,addr.get<std::string>().find("/")).substr(0,24));
+											if (k < addressCountOfType-1) aa.append("\n");
+										}
+									}
+								}
+								else {
+									aa.append(addr.get<std::string>().substr(0,addr.get<std::string>().find("/")));
+									if (k < addressCountOfType-1) aa.append("\n");
+								}
+							}
+						}
+						printf("%s\n",aa.c_str());
 					}
 				}
 			}
@@ -675,6 +871,323 @@ static int cli(int argc,char **argv)
 			printf("%u %s %s" ZT_EOL_S,scode,command.c_str(),responseBody.c_str());
 			return 1;
 		}
+	} else if (command == "dump") {
+		std::stringstream dump;
+		dump << "platform: ";
+#ifdef __APPLE__ 
+		dump << "macOS" << ZT_EOL_S;
+#elif defined(_WIN32)
+		dump << "Windows" << ZT_EOL_S;
+#elif defined(__LINUX__)
+		dump << "Linux" << ZT_EOL_S;
+#else
+		dump << "other unix based OS" << ZT_EOL_S;
+#endif
+		dump << "zerotier version: " << ZEROTIER_ONE_VERSION_MAJOR << "."
+			<< ZEROTIER_ONE_VERSION_MINOR << "." << ZEROTIER_ONE_VERSION_REVISION << ZT_EOL_S << ZT_EOL_S;
+
+		// grab status
+		dump << "status" << ZT_EOL_S << "------" << ZT_EOL_S;
+		unsigned int scode = Http::GET(1024 * 1024 * 16,60000,(const struct sockaddr *)&addr,"/status",requestHeaders,responseHeaders,responseBody);
+		if (scode != 200) {
+			printf("Error connecting to the ZeroTier service: %s\n\nPlease check that the service is running and that TCP port 9993 can be contacted via 127.0.0.1." ZT_EOL_S, responseBody.c_str());
+			return 1;
+		}
+		dump << responseBody << ZT_EOL_S;
+
+		responseHeaders.clear();
+		responseBody = "";
+
+		// grab network list
+		dump << ZT_EOL_S << "networks" << ZT_EOL_S << "--------" << ZT_EOL_S;
+		scode = Http::GET(1024 * 1024 * 16,60000,(const struct sockaddr *)&addr,"/network",requestHeaders,responseHeaders,responseBody);
+		if (scode != 200) {
+			printf("Error connecting to the ZeroTier service: %s\n\nPlease check that the service is running and that TCP port 9993 can be contacted via 127.0.0.1." ZT_EOL_S, responseBody.c_str());
+			return 1;
+		}
+		dump << responseBody << ZT_EOL_S;
+
+		responseHeaders.clear();
+		responseBody = "";
+
+		// list peers
+		dump << ZT_EOL_S << "peers" << ZT_EOL_S << "-----" << ZT_EOL_S;
+		scode = Http::GET(1024 * 1024 * 16,60000,(const struct sockaddr *)&addr,"/peer",requestHeaders,responseHeaders,responseBody);
+		if (scode != 200) {
+			printf("Error connecting to the ZeroTier service: %s\n\nPlease check that the service is running and that TCP port 9993 can be contacted via 127.0.0.1." ZT_EOL_S, responseBody.c_str());
+			return 1;
+		}
+		dump << responseBody << ZT_EOL_S;
+
+		// get bonds
+		dump << ZT_EOL_S << "bonds" << ZT_EOL_S << "-----" << ZT_EOL_S;
+		scode = Http::GET(1024 * 1024 * 16,60000,(const struct sockaddr *)&addr,"/bonds",requestHeaders,responseHeaders,responseBody);
+		if (scode != 200) {
+			printf("Error connecting to the ZeroTier service: %s\n\nPlease check that the service is running and that TCP port 9993 can be contacted via 127.0.0.1." ZT_EOL_S, responseBody.c_str());
+			return 1;
+		}
+		dump << responseBody << ZT_EOL_S;
+
+		responseHeaders.clear();
+		responseBody = "";
+
+		dump << ZT_EOL_S << "local.conf" << ZT_EOL_S << "----------" << ZT_EOL_S;
+		std::string localConf;
+		OSUtils::readFile((homeDir + ZT_PATH_SEPARATOR_S + "local.conf").c_str(), localConf);
+		if (localConf.empty()) {
+			dump << "None Present" << ZT_EOL_S;
+		}
+		else {
+			dump << localConf << ZT_EOL_S;
+		}
+
+		dump << ZT_EOL_S << "Network Interfaces" << ZT_EOL_S << "------------------" << ZT_EOL_S << ZT_EOL_S;
+#ifdef __APPLE__
+		CFArrayRef interfaces = SCNetworkInterfaceCopyAll();
+		CFIndex size = CFArrayGetCount(interfaces);
+		for(CFIndex i = 0; i < size; ++i) {
+			SCNetworkInterfaceRef iface = (SCNetworkInterfaceRef)CFArrayGetValueAtIndex(interfaces, i);
+
+			dump << "Interface " << i << ZT_EOL_S << "-----------" << ZT_EOL_S;
+			CFStringRef tmp = SCNetworkInterfaceGetBSDName(iface);
+			char stringBuffer[512] = {};
+			CFStringGetCString(tmp,stringBuffer, sizeof(stringBuffer), kCFStringEncodingUTF8);
+			dump << "Name: " << stringBuffer << ZT_EOL_S;
+			std::string ifName(stringBuffer);
+			int mtuCur, mtuMin, mtuMax;
+			SCNetworkInterfaceCopyMTU(iface, &mtuCur, &mtuMin, &mtuMax);
+			dump << "MTU: " << mtuCur << ZT_EOL_S;
+			tmp = SCNetworkInterfaceGetHardwareAddressString(iface);
+			CFStringGetCString(tmp, stringBuffer, sizeof(stringBuffer), kCFStringEncodingUTF8);
+			dump << "MAC: " << stringBuffer << ZT_EOL_S;
+			tmp = SCNetworkInterfaceGetInterfaceType(iface);
+			CFStringGetCString(tmp, stringBuffer, sizeof(stringBuffer), kCFStringEncodingUTF8);
+			dump << "Type: " << stringBuffer << ZT_EOL_S;
+			dump << "Addresses:" << ZT_EOL_S;
+
+			struct ifaddrs *ifap, *ifa;
+			void *addr;
+			getifaddrs(&ifap);
+			for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+				if (strcmp(ifName.c_str(), ifa->ifa_name) == 0) {
+					if (ifa->ifa_addr->sa_family == AF_INET) {
+						struct sockaddr_in *ipv4 = (struct sockaddr_in*)ifa->ifa_addr;
+						addr = &ipv4->sin_addr;
+					} else if (ifa->ifa_addr->sa_family == AF_INET6) {
+						struct sockaddr_in6 *ipv6 = (struct sockaddr_in6*)ifa->ifa_addr;
+						addr = &ipv6->sin6_addr;
+					} else {
+						continue;
+					}
+					inet_ntop(ifa->ifa_addr->sa_family, addr, stringBuffer, sizeof(stringBuffer));
+					dump << stringBuffer << ZT_EOL_S;
+				}
+			}
+
+			dump << ZT_EOL_S;
+		}
+
+
+		FSRef fsref;
+		UInt8 path[PATH_MAX];
+		if (FSFindFolder(kUserDomain, kDesktopFolderType, kDontCreateFolder, &fsref) == noErr &&
+				FSRefMakePath(&fsref, path, sizeof(path)) == noErr) {
+			
+		} else if (getenv("SUDO_USER")) {
+			sprintf((char*)path, "/Users/%s/Desktop/", getenv("SUDO_USER"));
+		} else {
+			fprintf(stdout, "%s", dump.str().c_str());
+			return 0;
+		}
+
+		sprintf((char*)path, "%s%szerotier_dump.txt", (char*)path, ZT_PATH_SEPARATOR_S);
+
+		fprintf(stdout, "Writing dump to: %s\n", path);
+		int fd = open((char*)path, O_CREAT|O_RDWR,0664);
+		if (fd == -1) {
+			fprintf(stderr, "Error creating file.\n");
+			return 1;
+		}
+		write(fd, dump.str().c_str(), dump.str().size());	
+		close(fd);
+#elif defined(_WIN32)
+		ULONG buffLen = 16384;
+		PIP_ADAPTER_ADDRESSES addresses;
+		
+		ULONG ret = 0;
+		do {
+			addresses = (PIP_ADAPTER_ADDRESSES)malloc(buffLen);
+
+			ret = GetAdaptersAddresses(AF_UNSPEC, 0, NULL, addresses, &buffLen);
+			if (ret == ERROR_BUFFER_OVERFLOW) {
+				free(addresses);
+				addresses = NULL;
+			}
+			else {
+				break;
+			}
+		} while (ret == ERROR_BUFFER_OVERFLOW);
+		
+		int i = 0;
+		if (ret == NO_ERROR) {
+			PIP_ADAPTER_ADDRESSES curAddr = addresses;
+			while (curAddr) {
+				dump << "Interface " << i << ZT_EOL_S << "-----------" << ZT_EOL_S;
+				dump << "Name: " << curAddr->AdapterName << ZT_EOL_S;
+				dump << "MTU: " << curAddr->Mtu << ZT_EOL_S;
+				dump << "MAC: ";
+				char macBuffer[64] = {};
+				sprintf(macBuffer, "%02x:%02x:%02x:%02x:%02x:%02x",
+					curAddr->PhysicalAddress[0],
+					curAddr->PhysicalAddress[1],
+					curAddr->PhysicalAddress[2],
+					curAddr->PhysicalAddress[3],
+					curAddr->PhysicalAddress[4],
+					curAddr->PhysicalAddress[5]);
+				dump << macBuffer << ZT_EOL_S;
+				dump << "Type: " << curAddr->IfType << ZT_EOL_S;
+				dump << "Addresses:" << ZT_EOL_S;
+				PIP_ADAPTER_UNICAST_ADDRESS pUnicast = NULL;
+				pUnicast = curAddr->FirstUnicastAddress;
+				if (pUnicast) {
+					for (int j = 0; pUnicast != NULL; ++j) {
+						char buf[128] = {};
+						DWORD bufLen = 128;
+						LPSOCKADDR a = pUnicast->Address.lpSockaddr;
+						WSAAddressToStringA(
+							pUnicast->Address.lpSockaddr,
+							pUnicast->Address.iSockaddrLength,
+							NULL,
+							buf,
+							&bufLen
+						);
+						dump << buf << ZT_EOL_S;
+						pUnicast = pUnicast->Next;
+					}
+				}
+
+				curAddr = curAddr->Next;
+				++i;
+			}
+		}
+		if (addresses) {
+			free(addresses);
+			addresses = NULL;
+		}
+
+		char path[MAX_PATH + 1] = {};
+		if (SHGetFolderPathA(NULL, CSIDL_DESKTOP, NULL, 0, path) == S_OK) {
+			sprintf(path, "%s%szerotier_dump.txt", path, ZT_PATH_SEPARATOR_S);
+			fprintf(stdout, "Writing dump to: %s\n", path);
+			HANDLE file = CreateFileA(
+				path,
+				GENERIC_WRITE,
+				0,
+				NULL,
+				CREATE_ALWAYS,
+				FILE_ATTRIBUTE_NORMAL,
+				NULL
+			);
+			if (file == INVALID_HANDLE_VALUE) {
+				fprintf(stdout, "%s", dump.str().c_str());
+				return 0;
+			}
+
+			BOOL err = WriteFile(
+				file,
+				dump.str().c_str(),
+				dump.str().size(),
+				NULL,
+				NULL
+			);
+			if (err = FALSE) {
+				fprintf(stderr, "Error writing file");
+				return 1;
+			}
+			CloseHandle(file);
+		}
+		else {
+			fprintf(stdout, "%s", dump.str().c_str());
+		}
+#elif defined(__LINUX__)
+		struct ifreq ifr;
+		struct ifconf ifc;
+		char buf[1024];
+		char stringBuffer[128];
+		int success = 0;
+		
+		int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+		
+		ifc.ifc_len = sizeof(buf);
+		ifc.ifc_buf = buf;
+		ioctl(sock, SIOCGIFCONF, &ifc);
+
+		struct ifreq *it = ifc.ifc_req;
+		const struct ifreq * const end = it + (ifc.ifc_len / sizeof(struct ifreq));
+		int count = 0;
+		for(; it != end; ++it) {
+			strcpy(ifr.ifr_name, it->ifr_name);
+			if(ioctl(sock, SIOCGIFFLAGS, &ifr) == 0) {
+				if (!(ifr.ifr_flags & IFF_LOOPBACK)) { // skip loopback
+					dump << "Interface " << count++ << ZT_EOL_S << "-----------" << ZT_EOL_S;
+					dump << "Name: " << ifr.ifr_name << ZT_EOL_S;
+					if (ioctl(sock, SIOCGIFMTU, &ifr) == 0) {
+						dump << "MTU: " << ifr.ifr_mtu << ZT_EOL_S;
+					}
+					if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
+						unsigned char mac_addr[6];
+						memcpy(mac_addr, ifr.ifr_hwaddr.sa_data, 6);
+						char macStr[16];
+						sprintf(macStr, "%02x:%02x:%02x:%02x:%02x:%02x",
+								mac_addr[0],
+								mac_addr[1],
+								mac_addr[2],
+								mac_addr[3],
+								mac_addr[4],
+								mac_addr[5]);
+						dump << "MAC: " << macStr << ZT_EOL_S;
+					}
+
+					dump << "Addresses: " << ZT_EOL_S;
+					struct ifaddrs *ifap, *ifa;
+					void *addr;
+					getifaddrs(&ifap);
+					for(ifa = ifap; ifa; ifa = ifa->ifa_next) {
+						if(strcmp(ifr.ifr_name, ifa->ifa_name) == 0) {
+							if(ifa->ifa_addr->sa_family == AF_INET) {
+								struct sockaddr_in *ipv4 = (struct sockaddr_in*)ifa->ifa_addr;
+								addr = &ipv4->sin_addr;
+							} else if (ifa->ifa_addr->sa_family == AF_INET6) {
+								struct sockaddr_in6 *ipv6 = (struct sockaddr_in6*)ifa->ifa_addr;
+								addr = &ipv6->sin6_addr;
+							} else {
+								continue;
+							}
+							inet_ntop(ifa->ifa_addr->sa_family, addr, stringBuffer, sizeof(stringBuffer));
+							dump << stringBuffer << ZT_EOL_S;
+						}
+					}
+				}
+			}
+		}
+		close(sock);
+		char cwd[16384];
+		getcwd(cwd, sizeof(cwd));
+		sprintf(cwd, "%s%szerotier_dump.txt", cwd, ZT_PATH_SEPARATOR_S);
+		fprintf(stdout, "Writing dump to: %s\n", cwd);
+		int fd = open(cwd, O_CREAT|O_RDWR,0664);
+		if (fd == -1) {
+			fprintf(stderr, "Error creating file.\n");
+			return 1;
+		}
+		write(fd, dump.str().c_str(), dump.str().size());	
+		close(fd);
+#else
+	fprintf(stderr, "%s", dump.str().c_str());
+#endif
+
+		// fprintf(stderr, "%s\n", dump.str().c_str());
+
 	} else {
 		cliPrintHelp(argv[0],stderr);
 		return 0;
@@ -1138,6 +1651,7 @@ static BOOL WINAPI _winConsoleCtrlHandler(DWORD dwCtrlType)
 	return FALSE;
 }
 
+// TODO: revisit this with https://support.microsoft.com/en-us/help/947709/how-to-use-the-netsh-advfirewall-firewall-context-instead-of-the-netsh
 static void _winPokeAHole()
 {
 	char myPath[MAX_PATH];
@@ -1356,12 +1870,14 @@ int main(int argc,char **argv)
 #ifdef __UNIX_LIKE__
 	signal(SIGHUP,&_sighandlerHup);
 	signal(SIGPIPE,SIG_IGN);
+	signal(SIGIO,SIG_IGN);
 	signal(SIGUSR1,SIG_IGN);
 	signal(SIGUSR2,SIG_IGN);
 	signal(SIGALRM,SIG_IGN);
 	signal(SIGINT,&_sighandlerQuit);
 	signal(SIGTERM,&_sighandlerQuit);
 	signal(SIGQUIT,&_sighandlerQuit);
+	signal(SIGINT,&_sighandlerQuit);
 
 	/* Ensure that there are no inherited file descriptors open from a previous
 	 * incarnation. This is a hack to ensure that GitHub issue #61 or variants
@@ -1510,7 +2026,7 @@ int main(int argc,char **argv)
 			ptmp.append(*pi);
 			if ((*pi != ".")&&(*pi != "..")) {
 				if (!OSUtils::mkdir(ptmp))
-					throw std::runtime_error("home path does not exist, and could not create");
+					throw std::runtime_error("home path does not exist, and could not create. Please verify local system permissions.");
 			}
 		}
 	}

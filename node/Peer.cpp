@@ -1,42 +1,31 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include "../version.h"
-
 #include "Constants.hpp"
 #include "Peer.hpp"
-#include "Node.hpp"
 #include "Switch.hpp"
 #include "Network.hpp"
 #include "SelfAwareness.hpp"
 #include "Packet.hpp"
 #include "Trace.hpp"
 #include "InetAddress.hpp"
+#include "RingBuffer.hpp"
+#include "Utils.hpp"
 
 namespace ZeroTier {
+
+static unsigned char s_freeRandomByteCounter = 0;
 
 Peer::Peer(const RuntimeEnvironment *renv,const Identity &myIdentity,const Identity &peerIdentity) :
 	RR(renv),
@@ -45,24 +34,39 @@ Peer::Peer(const RuntimeEnvironment *renv,const Identity &myIdentity,const Ident
 	_lastTriedMemorizedPath(0),
 	_lastDirectPathPushSent(0),
 	_lastDirectPathPushReceive(0),
+	_lastEchoRequestReceived(0),
 	_lastCredentialRequestSent(0),
 	_lastWhoisRequestReceived(0),
-	_lastEchoRequestReceived(0),
-	_lastComRequestReceived(0),
-	_lastComRequestSent(0),
 	_lastCredentialsReceived(0),
 	_lastTrustEstablishedPacketReceived(0),
 	_lastSentFullHello(0),
+	_lastEchoCheck(0),
+	_freeRandomByte((unsigned char)((uintptr_t)this >> 4) ^ ++s_freeRandomByteCounter),
 	_vProto(0),
 	_vMajor(0),
 	_vMinor(0),
 	_vRevision(0),
 	_id(peerIdentity),
 	_directPathPushCutoffCount(0),
-	_credentialsCutoffCount(0)
+	_credentialsCutoffCount(0),
+	_echoRequestCutoffCount(0),
+	_uniqueAlivePathCount(0),
+	_localMultipathSupported(false),
+	_remoteMultipathSupported(false),
+	_canUseMultipath(false),
+	_shouldCollectPathStatistics(0),
+	_bondingPolicy(0),
+	_lastComputedAggregateMeanLatency(0)
 {
-	if (!myIdentity.agree(peerIdentity,_key,ZT_PEER_SECRET_KEY_LENGTH))
+	if (!myIdentity.agree(peerIdentity,_key))
 		throw ZT_EXCEPTION_INVALID_ARGUMENT;
+
+	uint8_t ktmp[ZT_SYMMETRIC_KEY_SIZE];
+	KBKDFHMACSHA384(_key,ZT_KBKDF_LABEL_AES_GMAC_SIV_K0,0,0,ktmp);
+	_aesKeys[0].init(ktmp);
+	KBKDFHMACSHA384(_key,ZT_KBKDF_LABEL_AES_GMAC_SIV_K1,0,0,ktmp);
+	_aesKeys[1].init(ktmp);
+	Utils::burn(ktmp,ZT_SYMMETRIC_KEY_SIZE);
 }
 
 void Peer::received(
@@ -70,11 +74,13 @@ void Peer::received(
 	const SharedPtr<Path> &path,
 	const unsigned int hops,
 	const uint64_t packetId,
+	const unsigned int payloadLength,
 	const Packet::Verb verb,
 	const uint64_t inRePacketId,
 	const Packet::Verb inReVerb,
 	const bool trustEstablished,
-	const uint64_t networkId)
+	const uint64_t networkId,
+	const int32_t flowId)
 {
 	const int64_t now = RR->node->now();
 
@@ -87,8 +93,11 @@ void Peer::received(
 		case Packet::VERB_MULTICAST_FRAME:
 			_lastNontrivialReceive = now;
 			break;
-		default: break;
+		default:
+			break;
 	}
+
+	recordIncomingPacket(path, packetId, payloadLength, verb, flowId, now);
 
 	if (trustEstablished) {
 		_lastTrustEstablishedPacketReceived = now;
@@ -97,7 +106,6 @@ void Peer::received(
 
 	if (hops == 0) {
 		// If this is a direct packet (no hops), update existing paths or learn new ones
-
 		bool havePath = false;
 		{
 			Mutex::Lock _l(_paths_m);
@@ -137,6 +145,9 @@ void Peer::received(
 						if (q > replacePathQuality) {
 							replacePathQuality = q;
 							replacePath = i;
+							if (!_paths[i].p->alive(now)) {
+								break; // Stop searching, we found an identical dead path, replace the object
+							}
 						}
 					} else {
 						replacePath = i;
@@ -165,39 +176,20 @@ void Peer::received(
 	}
 
 	// If we have a trust relationship periodically push a message enumerating
-	// all known external addresses for ourselves. We now do this even if we
-	// have a current path since we'll want to use new ones too.
+	// all known external addresses for ourselves. If we already have a path this
+	// is done less frequently.
 	if (this->trustEstablished(now)) {
-		if ((now - _lastDirectPathPushSent) >= ZT_DIRECT_PATH_PUSH_INTERVAL) {
+		const int64_t sinceLastPush = now - _lastDirectPathPushSent;
+		if (sinceLastPush >= ((hops == 0) ? ZT_DIRECT_PATH_PUSH_INTERVAL_HAVEPATH : ZT_DIRECT_PATH_PUSH_INTERVAL)) {
 			_lastDirectPathPushSent = now;
-
-			std::vector<InetAddress> pathsToPush;
-
-			std::vector<InetAddress> dps(RR->node->directPaths());
-			for(std::vector<InetAddress>::const_iterator i(dps.begin());i!=dps.end();++i)
-				pathsToPush.push_back(*i);
-
-			// Do symmetric NAT prediction if we are communicating indirectly.
-			if (hops > 0) {
-				std::vector<InetAddress> sym(RR->sa->getSymmetricNatPredictions());
-				for(unsigned long i=0,added=0;i<sym.size();++i) {
-					InetAddress tmp(sym[(unsigned long)RR->node->prng() % sym.size()]);
-					if (std::find(pathsToPush.begin(),pathsToPush.end(),tmp) == pathsToPush.end()) {
-						pathsToPush.push_back(tmp);
-						if (++added >= ZT_PUSH_DIRECT_PATHS_MAX_PER_SCOPE_AND_FAMILY)
-							break;
-					}
-				}
-			}
-
+			std::vector<InetAddress> pathsToPush(RR->node->directPaths());
 			if (pathsToPush.size() > 0) {
 				std::vector<InetAddress>::const_iterator p(pathsToPush.begin());
 				while (p != pathsToPush.end()) {
-					Packet outp(_id.address(),RR->identity.address(),Packet::VERB_PUSH_DIRECT_PATHS);
-					outp.addSize(2); // leave room for count
-
+					Packet *const outp = new Packet(_id.address(),RR->identity.address(),Packet::VERB_PUSH_DIRECT_PATHS);
+					outp->addSize(2); // leave room for count
 					unsigned int count = 0;
-					while ((p != pathsToPush.end())&&((outp.size() + 24) < 1200)) {
+					while ((p != pathsToPush.end())&&((outp->size() + 24) < 1200)) {
 						uint8_t addressType = 4;
 						switch(p->ss_family) {
 							case AF_INET:
@@ -210,49 +202,56 @@ void Peer::received(
 								continue;
 						}
 
-						outp.append((uint8_t)0); // no flags
-						outp.append((uint16_t)0); // no extensions
-						outp.append(addressType);
-						outp.append((uint8_t)((addressType == 4) ? 6 : 18));
-						outp.append(p->rawIpData(),((addressType == 4) ? 4 : 16));
-						outp.append((uint16_t)p->port());
+						outp->append((uint8_t)0); // no flags
+						outp->append((uint16_t)0); // no extensions
+						outp->append(addressType);
+						outp->append((uint8_t)((addressType == 4) ? 6 : 18));
+						outp->append(p->rawIpData(),((addressType == 4) ? 4 : 16));
+						outp->append((uint16_t)p->port());
 
 						++count;
 						++p;
 					}
-
 					if (count) {
-						outp.setAt(ZT_PACKET_IDX_PAYLOAD,(uint16_t)count);
-						outp.armor(_key,true);
-						path->send(RR,tPtr,outp.data(),outp.size(),now);
+						outp->setAt(ZT_PACKET_IDX_PAYLOAD,(uint16_t)count);
+						outp->compress();
+						outp->armor(_key,true,aesKeysIfSupported());
+						path->send(RR,tPtr,outp->data(),outp->size(),now);
 					}
+					delete outp;
 				}
 			}
 		}
 	}
 }
 
-SharedPtr<Path> Peer::getBestPath(int64_t now,bool includeExpired) const
+SharedPtr<Path> Peer::getAppropriatePath(int64_t now, bool includeExpired, int32_t flowId)
 {
-	Mutex::Lock _l(_paths_m);
-
-	unsigned int bestPath = ZT_MAX_PEER_NETWORK_PATHS;
-	long bestPathQuality = 2147483647;
-	for(unsigned int i=0;i<ZT_MAX_PEER_NETWORK_PATHS;++i) {
-		if (_paths[i].p) {
-			if ((includeExpired)||((now - _paths[i].lr) < ZT_PEER_PATH_EXPIRATION)) {
-				const long q = _paths[i].p->quality(now) / _paths[i].priority;
-				if (q <= bestPathQuality) {
-					bestPathQuality = q;
-					bestPath = i;
+	if (!_bondToPeer) {
+		Mutex::Lock _l(_paths_m);
+		unsigned int bestPath = ZT_MAX_PEER_NETWORK_PATHS;
+		/**
+		 * Send traffic across the highest quality path only. This algorithm will still
+		 * use the old path quality metric from protocol version 9.
+		 */
+		long bestPathQuality = 2147483647;
+		for(unsigned int i=0;i<ZT_MAX_PEER_NETWORK_PATHS;++i) {
+			if (_paths[i].p) {
+				if ((includeExpired)||((now - _paths[i].lr) < ZT_PEER_PATH_EXPIRATION)) {
+					const long q = _paths[i].p->quality(now) / _paths[i].priority;
+					if (q <= bestPathQuality) {
+						bestPathQuality = q;
+						bestPath = i;
+					}
 				}
-			}
-		} else break;
+			} else break;
+		}
+		if (bestPath != ZT_MAX_PEER_NETWORK_PATHS) {
+			return _paths[bestPath].p;
+		}
+		return SharedPtr<Path>();
 	}
-
-	if (bestPath != ZT_MAX_PEER_NETWORK_PATHS)
-		return _paths[bestPath].p;
-	return SharedPtr<Path>();
+	return _bondToPeer->getAppropriatePath(now, flowId);
 }
 
 void Peer::introduce(void *const tPtr,const int64_t now,const SharedPtr<Peer> &other) const
@@ -354,7 +353,7 @@ void Peer::introduce(void *const tPtr,const int64_t now,const SharedPtr<Peer> &o
 					outp.append((uint8_t)4);
 					outp.append(other->_paths[theirs].p->address().rawIpData(),4);
 				}
-				outp.armor(_key,true);
+				outp.armor(_key,true,aesKeysIfSupported());
 				_paths[mine].p->send(RR,tPtr,outp.data(),outp.size(),now);
 			} else {
 				Packet outp(other->_id.address(),RR->identity.address(),Packet::VERB_RENDEZVOUS);
@@ -368,7 +367,7 @@ void Peer::introduce(void *const tPtr,const int64_t now,const SharedPtr<Peer> &o
 					outp.append((uint8_t)4);
 					outp.append(_paths[mine].p->address().rawIpData(),4);
 				}
-				outp.armor(other->_key,true);
+				outp.armor(other->_key,true,aesKeysIfSupported());
 				other->_paths[theirs].p->send(RR,tPtr,outp.data(),outp.size(),now);
 			}
 			++alt;
@@ -409,12 +408,12 @@ void Peer::sendHELLO(void *tPtr,const int64_t localSocket,const InetAddress &atA
 
 	outp.cryptField(_key,startCryptedPortionAt,outp.size() - startCryptedPortionAt);
 
-	RR->node->expectReplyTo(outp.packetId());
-
 	if (atAddress) {
-		outp.armor(_key,false); // false == don't encrypt full payload, but add MAC
+		outp.armor(_key,false,aesKeysIfSupported()); // false == don't encrypt full payload, but add MAC
+		RR->node->expectReplyTo(outp.packetId());
 		RR->node->putPacket(tPtr,localSocket,atAddress,outp.data(),outp.size());
 	} else {
+		RR->node->expectReplyTo(outp.packetId());
 		RR->sw->send(tPtr,outp,false); // false == don't encrypt full payload, but add MAC
 	}
 }
@@ -423,8 +422,8 @@ void Peer::attemptToContactAt(void *tPtr,const int64_t localSocket,const InetAdd
 {
 	if ( (!sendFullHello) && (_vProto >= 5) && (!((_vMajor == 1)&&(_vMinor == 1)&&(_vRevision == 0))) ) {
 		Packet outp(_id.address(),RR->identity.address(),Packet::VERB_ECHO);
+		outp.armor(_key,true,aesKeysIfSupported());
 		RR->node->expectReplyTo(outp.packetId());
-		outp.armor(_key,true);
 		RR->node->putPacket(tPtr,localSocket,atAddress,outp.data(),outp.size());
 	} else {
 		sendHELLO(tPtr,localSocket,atAddress,now);
@@ -441,11 +440,54 @@ void Peer::tryMemorizedPath(void *tPtr,int64_t now)
 	}
 }
 
+void Peer::performMultipathStateCheck(void *tPtr, int64_t now)
+{
+	/**
+	 * Check for conditions required for multipath bonding and create a bond
+	 * if allowed.
+	 */
+	_localMultipathSupported = ((RR->bc->inUse()) && (ZT_PROTO_VERSION > 9));
+	if (_localMultipathSupported) {
+		int currAlivePathCount = 0;
+		int duplicatePathsFound = 0;
+		for (unsigned int i=0;i<ZT_MAX_PEER_NETWORK_PATHS;++i) {
+			if (_paths[i].p) {
+				currAlivePathCount++;
+				for (unsigned int j=0;j<ZT_MAX_PEER_NETWORK_PATHS;++j) {
+					if (_paths[i].p && _paths[j].p && _paths[i].p->address().ipsEqual2(_paths[j].p->address()) && i != j) {
+						duplicatePathsFound+=1;
+						break;
+					}
+				}
+			}
+		}
+		_uniqueAlivePathCount = (currAlivePathCount - (duplicatePathsFound / 2));
+		_remoteMultipathSupported = _vProto > 9;
+		_canUseMultipath = _localMultipathSupported && _remoteMultipathSupported && (_uniqueAlivePathCount > 1);
+	}
+	if (_canUseMultipath && !_bondToPeer) {
+		if (RR->bc) {
+			_bondToPeer = RR->bc->createTransportTriggeredBond(RR, this);
+			/**
+			 * Allow new bond to retroactively learn all paths known to this peer
+			 */
+			if (_bondToPeer) {
+				for (unsigned int i=0;i<ZT_MAX_PEER_NETWORK_PATHS;++i) {
+					if (_paths[i].p) {
+						_bondToPeer->nominatePath(_paths[i].p, now);
+					}
+				}
+			}
+		}
+	}
+}
+
 unsigned int Peer::doPingAndKeepalive(void *tPtr,int64_t now)
 {
 	unsigned int sent = 0;
-
 	Mutex::Lock _l(_paths_m);
+
+	performMultipathStateCheck(tPtr, now);
 
 	const bool sendFullHello = ((now - _lastSentFullHello) >= ZT_PEER_PING_PERIOD);
 	_lastSentFullHello = now;
@@ -466,7 +508,8 @@ unsigned int Peer::doPingAndKeepalive(void *tPtr,int64_t now)
 		if (_paths[i].p) {
 			// Clean expired and reduced priority paths
 			if ( ((now - _paths[i].lr) < ZT_PEER_PATH_EXPIRATION) && (_paths[i].priority == maxPriority) ) {
-				if ((sendFullHello)||(_paths[i].p->needsHeartbeat(now))) {
+				if ((sendFullHello)||(_paths[i].p->needsHeartbeat(now))
+					|| (_canUseMultipath && _paths[i].p->needsGratuitousHeartbeat(now))) {
 					attemptToContactAt(tPtr,_paths[i].p->localSocket(),_paths[i].p->address(),now,sendFullHello);
 					_paths[i].p->sent(now);
 					sent |= (_paths[i].p->address().ss_family == AF_INET) ? 0x1 : 0x2;
@@ -477,13 +520,6 @@ unsigned int Peer::doPingAndKeepalive(void *tPtr,int64_t now)
 			}
 		} else break;
 	}
-	while(j < ZT_MAX_PEER_NETWORK_PATHS) {
-		_paths[j].lr = 0;
-		_paths[j].p.zero();
-		_paths[j].priority = 1;
-		++j;
-	}
-
 	return sent;
 }
 
@@ -548,6 +584,32 @@ void Peer::resetWithinScope(void *tPtr,InetAddress::IpScope scope,int inetAddres
 			}
 		} else break;
 	}
+}
+
+void Peer::recordOutgoingPacket(const SharedPtr<Path> &path, const uint64_t packetId,
+	uint16_t payloadLength, const Packet::Verb verb, const int32_t flowId, int64_t now)
+{
+	if (!_shouldCollectPathStatistics || !_bondToPeer) {
+		return;
+	}
+	_bondToPeer->recordOutgoingPacket(path, packetId, payloadLength, verb, flowId, now);
+}
+
+void Peer::recordIncomingInvalidPacket(const SharedPtr<Path>& path)
+{
+	if (!_shouldCollectPathStatistics || !_bondToPeer) {
+		return;
+	}
+	_bondToPeer->recordIncomingInvalidPacket(path);
+}
+
+void Peer::recordIncomingPacket(const SharedPtr<Path> &path, const uint64_t packetId,
+	uint16_t payloadLength, const Packet::Verb verb, const int32_t flowId, int64_t now)
+{
+	if (!_shouldCollectPathStatistics || !_bondToPeer) {
+		return;
+	}
+	_bondToPeer->recordIncomingPacket(path, packetId, payloadLength, verb, flowId, now);
 }
 
 } // namespace ZeroTier

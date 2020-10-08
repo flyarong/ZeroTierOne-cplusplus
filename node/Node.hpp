@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_NODE_HPP
 #define ZT_NODE_HPP
@@ -47,6 +34,7 @@
 #include "Salsa20.hpp"
 #include "NetworkController.hpp"
 #include "Hashtable.hpp"
+#include "BondController.hpp"
 
 // Bit mask for "expecting reply" hash
 #define ZT_EXPECTING_REPLIES_BUCKET_MASK1 255
@@ -199,6 +187,8 @@ public:
 
 	inline const Identity &identity() const { return _RR.identity; }
 
+	inline BondController *bondController() const { return _RR.bc; }
+
 	/**
 	 * Register that we are expecting a reply to a packet ID
 	 *
@@ -260,6 +250,22 @@ public:
 	inline const Address &remoteTraceTarget() const { return _remoteTraceTarget; }
 	inline Trace::Level remoteTraceLevel() const { return _remoteTraceLevel; }
 
+	inline bool localControllerHasAuthorized(const int64_t now,const uint64_t nwid,const Address &addr) const
+	{
+		_localControllerAuthorizations_m.lock();
+		const int64_t *const at = _localControllerAuthorizations.get(_LocalControllerAuth(nwid,addr));
+		_localControllerAuthorizations_m.unlock();
+		if (at)
+			return ((now - *at) < (ZT_NETWORK_AUTOCONF_DELAY * 3));
+		return false;
+	}
+
+	inline void statsLogVerb(const unsigned int v,const unsigned int bytes)
+	{
+		++_stats.inVerbCounts[v];
+		_stats.inVerbBytes[v] += (uint64_t)bytes;
+	}
+
 private:
 	RuntimeEnvironment _RR;
 	RuntimeEnvironment *RR;
@@ -272,6 +278,22 @@ private:
 
 	// Time of last identity verification indexed by InetAddress.rateGateHash() -- used in IncomingPacket::_doHELLO() via rateGateIdentityVerification()
 	int64_t _lastIdentityVerification[16384];
+
+	// Statistics about stuff happening
+	volatile ZT_NodeStatistics _stats;
+
+	// Map that remembers if we have recently sent a network config to someone
+	// querying us as a controller.
+	struct _LocalControllerAuth
+	{
+		uint64_t nwid,address;
+		_LocalControllerAuth(const uint64_t nwid_,const Address &address_) : nwid(nwid_),address(address_.toInt()) {}
+		inline unsigned long hashCode() const { return (unsigned long)(nwid ^ address); }
+		inline bool operator==(const _LocalControllerAuth &a) const { return ((a.nwid == nwid)&&(a.address == address)); }
+		inline bool operator!=(const _LocalControllerAuth &a) const { return ((a.nwid != nwid)||(a.address != address)); }
+	};
+	Hashtable< _LocalControllerAuth,int64_t > _localControllerAuthorizations;
+	Mutex _localControllerAuthorizations_m;
 
 	Hashtable< uint64_t,SharedPtr<Network> > _networks;
 	Mutex _networks_m;
@@ -286,6 +308,7 @@ private:
 
 	volatile int64_t _now;
 	int64_t _lastPingCheck;
+	int64_t _lastGratuitousPingCheck;
 	int64_t _lastHousekeepingRun;
 	int64_t _lastMemoizedTraceSettings;
 	volatile int64_t _prngState[2];

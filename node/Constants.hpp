@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_CONSTANTS_HPP
 #define ZT_CONSTANTS_HPP
@@ -41,6 +28,12 @@
 //
 // Also makes sure __BYTE_ORDER is defined reasonably.
 //
+
+#ifndef ZT_INLINE
+#define ZT_INLINE inline
+#endif
+
+#define restrict
 
 // Hack: make sure __GCC__ is defined on old GCC compilers
 #ifndef __GCC__
@@ -72,14 +65,6 @@
 #include <machine/endian.h>
 #endif
 
-// Defined this macro to disable "type punning" on a number of targets that
-// have issues with unaligned memory access.
-#if defined(__arm__) || defined(__ARMEL__) || (defined(__APPLE__) && ( (defined(TARGET_OS_IPHONE) && (TARGET_OS_IPHONE != 0)) || (defined(TARGET_OS_WATCH) && (TARGET_OS_WATCH != 0)) || (defined(TARGET_IPHONE_SIMULATOR) && (TARGET_IPHONE_SIMULATOR != 0)) ) )
-#ifndef ZT_NO_TYPE_PUNNING
-#define ZT_NO_TYPE_PUNNING
-#endif
-#endif
-
 #if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #ifndef __UNIX_LIKE__
 #define __UNIX_LIKE__
@@ -107,11 +92,44 @@
 #pragma warning(disable : 4101)
 #undef __UNIX_LIKE__
 #undef __BSD__
-#define ZT_PATH_SEPARATOR '\\'
-#define ZT_PATH_SEPARATOR_S "\\"
-#define ZT_EOL_S "\r\n"
 #include <WinSock2.h>
 #include <Windows.h>
+#endif
+
+#ifdef __NetBSD__
+#ifndef RTF_MULTICAST
+#define RTF_MULTICAST   0x20000000
+#endif
+#endif
+
+#if (defined(__amd64) || defined(__amd64__) || defined(__x86_64) || defined(__x86_64__) || defined(__AMD64) || defined(__AMD64__) || defined(_M_X64))
+#define ZT_ARCH_X64 1
+#include <xmmintrin.h>
+#include <emmintrin.h>
+#include <immintrin.h>
+#include <tmmintrin.h>
+#include <mmintrin.h>
+#endif
+
+#if (defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(ZT_ARCH_ARM_HAS_NEON))
+#if (defined(__APPLE__) && !defined(__LP64__)) || (defined(__ANDROID__) && defined(__arm__))
+#ifdef ZT_ARCH_ARM_HAS_NEON
+#undef ZT_ARCH_ARM_HAS_NEON
+#endif
+#else
+#ifndef ZT_ARCH_ARM_HAS_NEON
+#define ZT_ARCH_ARM_HAS_NEON 1
+#endif
+#include <arm_neon.h>
+/*#include <arm_acle.h>*/
+#endif
+#endif
+
+// Define ZT_NO_TYPE_PUNNING to disable reckless casts on anything other than x86/x64.
+#if (!(defined(__amd64__) || defined(__amd64) || defined(__x86_64__) || defined(__x86_64) || defined(_M_AMD64) || defined(_M_X64) || defined(i386) || defined(__i386) || defined(__i386__) || defined(__i486__) || defined(__i586__) || defined(__i686__) || defined(_M_IX86) || defined(__X86__) || defined(_X86_) || defined(__I86__) || defined(__INTEL__) || defined(__386)))
+#ifndef ZT_NO_TYPE_PUNNING
+#define ZT_NO_TYPE_PUNNING
+#endif
 #endif
 
 // Assume little endian if not defined
@@ -124,7 +142,11 @@
 #define __BYTE_ORDER 1234
 #endif
 
-#ifdef __UNIX_LIKE__
+#ifdef __WINDOWS__
+#define ZT_PATH_SEPARATOR '\\'
+#define ZT_PATH_SEPARATOR_S "\\"
+#define ZT_EOL_S "\r\n"
+#else
 #define ZT_PATH_SEPARATOR '/'
 #define ZT_PATH_SEPARATOR_S "/"
 #define ZT_EOL_S "\n"
@@ -132,10 +154,6 @@
 
 #ifndef __BYTE_ORDER
 #include <endian.h>
-#endif
-
-#ifdef __NetBSD__
-#define RTF_MULTICAST   0x20000000
 #endif
 
 #if (defined(__GNUC__) && (__GNUC__ >= 3)) || (defined(__INTEL_COMPILER) && (__INTEL_COMPILER >= 800)) || defined(__clang__)
@@ -170,6 +188,8 @@
  */
 #define ZT_ADDRESS_LENGTH_HEX 10
 
+#define ZT_SYMMETRIC_KEY_SIZE 48
+
 /**
  * Addresses beginning with this byte are reserved for the joy of in-band signaling
  */
@@ -187,29 +207,18 @@
 
 /**
  * Size of RX queue
- *
- * This is about 2mb, and can be decreased for small devices. A queue smaller
- * than about 4 is probably going to cause a lot of lost packets.
  */
-#define ZT_RX_QUEUE_SIZE 64
+#define ZT_RX_QUEUE_SIZE 32
 
 /**
  * Size of TX queue
- *
- * This is about 2mb, and can be decreased for small devices. A queue smaller
- * than about 4 is probably going to cause a lot of lost packets.
  */
-#define ZT_TX_QUEUE_SIZE 64
-
-/**
- * Length of secret key in bytes -- 256-bit -- do not change
- */
-#define ZT_PEER_SECRET_KEY_LENGTH 32
+#define ZT_TX_QUEUE_SIZE 32
 
 /**
  * Minimum delay between timer task checks to prevent thrashing
  */
-#define ZT_CORE_TIMER_TASK_GRANULARITY 500
+#define ZT_CORE_TIMER_TASK_GRANULARITY 60
 
 /**
  * How often Topology::clean() and Network::clean() and similar are called, in ms
@@ -230,11 +239,6 @@
  * Receive queue entry timeout
  */
 #define ZT_RECEIVE_QUEUE_TIMEOUT 5000
-
-/**
- * Maximum latency to allow for OK(HELLO) before packet is discarded
- */
-#define ZT_HELLO_MAX_ALLOWABLE_LATENCY 120000
 
 /**
  * Maximum number of ZT hops allowed (this is not IP hops/TTL)
@@ -259,11 +263,6 @@
 #define ZT_MULTICAST_EXPLICIT_GATHER_DELAY (ZT_MULTICAST_LIKE_EXPIRE / 10)
 
 /**
- * Expiration for credentials presented for MULTICAST_LIKE or MULTICAST_GATHER (for non-network-members)
- */
-#define ZT_MULTICAST_CREDENTIAL_EXPIRATON ZT_MULTICAST_LIKE_EXPIRE
-
-/**
  * Timeout for outgoing multicasts
  *
  * This is how long we wait for explicit or implicit gather results.
@@ -274,6 +273,11 @@
  * Delay between checks of peer pings, etc., and also related housekeeping tasks
  */
 #define ZT_PING_CHECK_INVERVAL 5000
+
+/**
+ * How often the local.conf file is checked for changes (service, should be moved there)
+ */
+#define ZT_LOCAL_CONF_FILE_CHECK_INTERVAL 10000
 
 /**
  * How frequently to send heartbeats over in-use paths
@@ -301,9 +305,217 @@
 #define ZT_PEER_EXPIRED_PATH_TRIAL_PERIOD (ZT_PEER_PING_PERIOD * 10)
 
 /**
+ * Outgoing packets are only used for QoS/ACK statistical sampling if their
+ * packet ID is divisible by this integer. This is to provide a mechanism for
+ * both peers to agree on which packets need special treatment without having
+ * to exchange information. Changing this value would be a breaking change and
+ * would necessitate a protocol version upgrade. Since each incoming and
+ * outgoing packet ID is checked against this value its evaluation is of the
+ * form:
+ *
+ * (id & (divisor - 1)) == 0, thus the divisor must be a power of 2.
+ *
+ * This value is set at (16) so that given a normally-distributed RNG output
+ * we will sample 1/16th (or ~6.25%) of packets.
+ */
+#define ZT_QOS_ACK_DIVISOR 0x2
+
+/**
+ * Time horizon for VERB_QOS_MEASUREMENT and VERB_ACK packet processing cutoff
+ */
+#define ZT_QOS_ACK_CUTOFF_TIME 30000
+
+/**
+ * Maximum number of VERB_QOS_MEASUREMENT and VERB_ACK packets allowed to be
+ * processed within cutoff time. Separate totals are kept for each type but
+ * the limit is the same for both.
+ *
+ * This limits how often this peer will compute statistical estimates
+ * of various QoS measures from a VERB_QOS_MEASUREMENT or VERB_ACK packets to
+ * CUTOFF_LIMIT times per CUTOFF_TIME milliseconds per peer to prevent
+ * this from being useful for DOS amplification attacks.
+ */
+#define ZT_QOS_ACK_CUTOFF_LIMIT 128
+
+/**
+ * Minimum acceptable size for a VERB_QOS_MEASUREMENT packet
+ */
+#define ZT_QOS_MIN_PACKET_SIZE (8 + 1)
+
+/**
+ * Maximum acceptable size for a VERB_QOS_MEASUREMENT packet
+ */
+#define ZT_QOS_MAX_PACKET_SIZE 1400
+
+/**
+ * How many ID:sojourn time pairs are in a single QoS packet
+ */
+#define ZT_QOS_TABLE_SIZE ((ZT_QOS_MAX_PACKET_SIZE * 8) / (64 + 16))
+
+/**
+ * Maximum number of outgoing packets we monitor for QoS information
+ */
+#define ZT_QOS_MAX_OUTSTANDING_RECORDS (1024*16)
+
+/**
+ * Interval used for rate-limiting the computation of path quality estimates.
+ */
+#define ZT_QOS_COMPUTE_INTERVAL 1000
+
+/**
+ * Number of samples to consider when processing real-time path statistics
+ */
+#define ZT_QOS_SHORTTERM_SAMPLE_WIN_SIZE 32
+
+/**
+ * Max allowable time spent in any queue (in ms)
+ */
+#define ZT_AQM_TARGET 5
+
+/**
+ * Time period where the time spent in the queue by a packet should fall below.
+ * target at least once. (in ms)
+ */
+#define ZT_AQM_INTERVAL 100
+
+/**
+ * The number of bytes that each queue is allowed to send during each DRR cycle.
+ * This approximates a single-byte-based fairness queuing scheme.
+ */
+#define ZT_AQM_QUANTUM ZT_DEFAULT_MTU
+
+/**
+ * The maximum total number of packets that can be queued among all
+ * active/inactive, old/new queues.
+ */
+#define ZT_AQM_MAX_ENQUEUED_PACKETS 1024
+
+/**
+ * Number of QoS queues (buckets)
+ */
+#define ZT_AQM_NUM_BUCKETS 9
+
+/**
+ * All unspecified traffic is put in this bucket. Anything in a bucket with a
+ * smaller value is deprioritized. Anything in a bucket with a higher value is
+ prioritized over other traffic.
+ */
+#define ZT_AQM_DEFAULT_BUCKET 0
+
+/**
+ * How often we emit a one-liner bond summary for each peer
+ */
+#define ZT_MULTIPATH_BOND_STATUS_INTERVAL 60000
+
+/**
+ * How long before we consider a path to be dead in the general sense. This is
+ * used while searching for default or alternative paths to try in the absence
+ * of direct guidance from the user or a selection policy.
+ */
+#define ZT_MULTIPATH_DEFAULT_FAILOVER_INTERVAL 10000
+
+/**
+ * How often flows are evaluated
+ */
+#define ZT_MULTIPATH_FLOW_CHECK_INTERVAL 10000
+
+/**
+ * How long before we consider a flow to be dead and remove it from the
+ * policy's list.
+ */
+#define ZT_MULTIPATH_FLOW_EXPIRATION_INTERVAL (60000 * 5)
+
+/**
+ * How often a flow's statistical counters are reset
+ */
+#define ZT_FLOW_STATS_RESET_INTERVAL ZT_MULTIPATH_FLOW_EXPIRATION_INTERVAL
+
+/**
+ * Maximum number of flows allowed before we start forcibly forgetting old ones
+ */
+#define ZT_FLOW_MAX_COUNT (1024*64)
+
+/**
+ * How often flows are rebalanced across link (if at all)
+ */
+#define ZT_FLOW_MIN_REBALANCE_INTERVAL 5000
+
+/**
+ * How often flows are rebalanced across link (if at all)
+ */
+#define ZT_FLOW_REBALANCE_INTERVAL 5000
+
+/**
+ * A defensive timer to prevent path quality metrics from being
+ * processed too often.
+ */
+#define ZT_BOND_BACKGROUND_TASK_MIN_INTERVAL ZT_CORE_TIMER_TASK_GRANULARITY
+
+/**
+ * How often a bonding policy's background tasks are processed,
+ * some need more frequent attention than others.
+ */
+#define ZT_MULTIPATH_ACTIVE_BACKUP_CHECK_INTERVAL ZT_CORE_TIMER_TASK_GRANULARITY
+
+/**
+ * Minimum amount of time (since a previous transition) before the active-backup bonding
+ * policy is allowed to transition to a different link. Only valid for active-backup.
+ */
+#define ZT_MULTIPATH_MIN_ACTIVE_BACKUP_AUTOFLOP_INTERVAL 10000
+
+/**
+ * How often a peer checks that incoming (and outgoing) traffic on a bonded link is
+ * appropriately paired.
+ */
+#define ZT_PATH_NEGOTIATION_CHECK_INTERVAL 15000
+
+/**
+ * Time horizon for path negotiation paths cutoff
+ */
+#define ZT_PATH_NEGOTIATION_CUTOFF_TIME 60000
+
+/**
+ * Maximum number of path negotiations within cutoff time
+ *
+ * This limits response to PATH_NEGOTIATION to CUTOFF_LIMIT responses
+ * per CUTOFF_TIME milliseconds per peer to prevent this from being
+ * useful for DOS amplification attacks.
+ */
+#define ZT_PATH_NEGOTIATION_CUTOFF_LIMIT 8
+
+/**
+ * How many times a peer will attempt to petition another peer to synchronize its
+ * traffic to the same path before giving up and surrendering to the other peer's preference.
+ */
+#define ZT_PATH_NEGOTIATION_TRY_COUNT 3
+
+/**
+ * How much greater the quality of a path should be before an
+ * optimization procedure triggers a switch.
+ */
+#define ZT_MULTIPATH_ACTIVE_BACKUP_OPTIMIZE_MIN_THRESHOLD 0.10
+
+/**
+ * Artificially inflates the failover score for paths which meet
+ * certain non-performance-related policy ranking criteria.
+ */
+#define ZT_MULTIPATH_FAILOVER_HANDICAP_PREFERRED 500
+#define ZT_MULTIPATH_FAILOVER_HANDICAP_PRIMARY 1000
+#define ZT_MULTIPATH_FAILOVER_HANDICAP_NEGOTIATED 5000
+
+/**
+ * An indicator that no flow is to be associated with the given packet
+ */
+#define ZT_QOS_NO_FLOW -1
+
+/**
  * Timeout for overall peer activity (measured from last receive)
  */
+#ifndef ZT_SDK
 #define ZT_PEER_ACTIVITY_TIMEOUT 500000
+#else
+#define ZT_PEER_ACTIVITY_TIMEOUT 30000
+#endif
 
 /**
  * General rate limit timeout for multiple packet types (HELLO, etc.)
@@ -349,19 +561,45 @@
 #define ZT_MAX_BRIDGE_ROUTES 67108864
 
 /**
- * If there is no known route, spam to up to this many active bridges
+ * If there is no known L2 bridging route, spam to up to this many active bridges
  */
 #define ZT_MAX_BRIDGE_SPAM 32
 
 /**
  * Interval between direct path pushes in milliseconds
  */
-#define ZT_DIRECT_PATH_PUSH_INTERVAL 120000
+#define ZT_DIRECT_PATH_PUSH_INTERVAL 15000
+
+/**
+ * Interval between direct path pushes in milliseconds if we already have a path
+ */
+#define ZT_DIRECT_PATH_PUSH_INTERVAL_HAVEPATH 120000
 
 /**
  * Time horizon for push direct paths cutoff
  */
 #define ZT_PUSH_DIRECT_PATHS_CUTOFF_TIME 30000
+
+/**
+ * Drainage constants for VERB_ECHO rate-limiters
+ */
+#define ZT_ECHO_CUTOFF_LIMIT ((1000 / ZT_CORE_TIMER_TASK_GRANULARITY) * ZT_MAX_PEER_NETWORK_PATHS)
+#define ZT_ECHO_DRAINAGE_DIVISOR (1000 / ZT_ECHO_CUTOFF_LIMIT)
+
+/**
+ * Drainage constants for VERB_QOS rate-limiters
+ */
+#define ZT_QOS_CUTOFF_LIMIT ((1000 / ZT_CORE_TIMER_TASK_GRANULARITY) * ZT_MAX_PEER_NETWORK_PATHS)
+#define ZT_QOS_DRAINAGE_DIVISOR (1000 / ZT_QOS_CUTOFF_LIMIT)
+
+/**
+ * Drainage constants for VERB_ACK rate-limiters
+ */
+#define ZT_ACK_CUTOFF_LIMIT 128
+#define ZT_ACK_DRAINAGE_DIVISOR (1000 / ZT_ACK_CUTOFF_LIMIT)
+
+#define ZT_MULTIPATH_DEFAULT_REFRCTORY_PERIOD 8000
+#define ZT_MULTIPATH_MAX_REFRACTORY_PERIOD 600000
 
 /**
  * Maximum number of direct path pushes within cutoff time
@@ -441,16 +679,7 @@
  */
 #define ZT_THREAD_MIN_STACK_SIZE 1048576
 
-/* Ethernet frame types that might be relevant to us */
-#define ZT_ETHERTYPE_IPV4 0x0800
-#define ZT_ETHERTYPE_ARP 0x0806
-#define ZT_ETHERTYPE_RARP 0x8035
-#define ZT_ETHERTYPE_ATALK 0x809b
-#define ZT_ETHERTYPE_AARP 0x80f3
-#define ZT_ETHERTYPE_IPX_A 0x8137
-#define ZT_ETHERTYPE_IPX_B 0x8138
-#define ZT_ETHERTYPE_IPV6 0x86dd
-
+// Exceptions thrown in core ZT code
 #define ZT_EXCEPTION_OUT_OF_BOUNDS 100
 #define ZT_EXCEPTION_OUT_OF_MEMORY 101
 #define ZT_EXCEPTION_PRIVATE_KEY_REQUIRED 102

@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -211,7 +198,7 @@ static int testCrypto()
 			bytes += 1234567.0;
 		}
 		uint64_t end = OSUtils::now();
-		SHA512::hash(buf1,bb,1234567);
+		SHA512(buf1,bb,1234567);
 		std::cout << ((bytes / 1048576.0) / ((long double)(end - start) / 1024.0)) << " MiB/second (" << Utils::hex(buf1,16,hexbuf) << ')' << std::endl;
 		::free((void *)bb);
 	}
@@ -263,13 +250,38 @@ static int testCrypto()
 			bytes += 1234567.0;
 		}
 		uint64_t end = OSUtils::now();
-		SHA512::hash(buf1,bb,1234567);
+		SHA512(buf1,bb,1234567);
 		std::cout << ((bytes / 1048576.0) / ((long double)(end - start) / 1024.0)) << " MiB/second (" << Utils::hex(buf1,16,hexbuf) << ')' << std::endl;
 		::free((void *)bb);
 	}
 
+	std::cout << "[crypto] Benchmarking AES-GMAC-SIV... "; std::cout.flush();
+	{
+		uint64_t end,start = OSUtils::now();
+		uint64_t bytes = 0;
+		AES k0,k1;
+		k0.init(buf1);
+		k1.init(buf2);
+		AES::GMACSIVEncryptor enc(k0,k1);
+		for (;;) {
+			for(unsigned int i=0;i<10000;++i) {
+				enc.init(i,buf2);
+				enc.update1(buf1,sizeof(buf1));
+				enc.finish1();
+				enc.update2(buf1,sizeof(buf1));
+				enc.finish2();
+				buf1[0] = buf2[0];
+				bytes += sizeof(buf1);
+			}
+			end = OSUtils::now();
+			if ((end - start) >= 5000)
+				break;
+		}
+		std::cout << (((double)bytes / 1048576.0) / ((double)(end - start) / 1024.0)) << " MiB/second" << std::endl;
+	}
+
 	std::cout << "[crypto] Testing SHA-512... "; std::cout.flush();
-	SHA512::hash(buf1,sha512TV0Input,(unsigned int)strlen(sha512TV0Input));
+	SHA512(buf1,sha512TV0Input,(unsigned int)strlen(sha512TV0Input));
 	if (memcmp(buf1,sha512TV0Digest,64)) {
 		std::cout << "FAIL" << std::endl;
 		return -1;
@@ -630,8 +642,8 @@ static int testPacket()
 		return -1;
 	}
 
-	a.armor(salsaKey,true);
-	if (!a.dearmor(salsaKey)) {
+	a.armor(salsaKey,true,nullptr);
+	if (!a.dearmor(salsaKey,nullptr)) {
 		std::cout << "FAIL (encrypt-decrypt/verify)" << std::endl;
 		return -1;
 	}
@@ -668,52 +680,6 @@ static int testOther()
 	std::cout << " " << InetAddress("0/9993").toString(buf);
 	std::cout << " " << InetAddress("").toString(buf);
 	std::cout << std::endl;
-
-#if 0
-	std::cout << "[other] Benchmarking memcpy... "; std::cout.flush();
-	{
-		unsigned char *bb = (unsigned char *)::malloc(1234567);
-		unsigned char *cc = (unsigned char *)::malloc(1234567);
-		for(unsigned int i=0;i<1234567;++i)
-			bb[i] = (unsigned char)i;
-		double bytes = 0.0;
-		uint64_t start = OSUtils::now();
-		for(unsigned int i=0;i<20000;++i) {
-			++bb[i];
-			++bb[i+1];
-			memcpy(cc,bb,1234567);
-			bytes += 1234567.0;
-		}
-		if (cc[0] != bb[0])
-			abort();
-		uint64_t end = OSUtils::now();
-		std::cout << ((bytes / 1048576.0) / ((long double)(end - start) / 1024.0)) << " MiB/second" << std::endl;
-		::free((void *)bb);
-		::free((void *)cc);
-	}
-#endif
-
-	std::cout << "[other] Benchmarking ZT_FAST_MEMCPY... "; std::cout.flush();
-	{
-		unsigned char *bb = (unsigned char *)::malloc(1234567);
-		unsigned char *cc = (unsigned char *)::malloc(1234567);
-		for(unsigned int i=0;i<1234567;++i)
-			bb[i] = (unsigned char)i;
-		double bytes = 0.0;
-		uint64_t start = OSUtils::now();
-		for(unsigned int i=0;i<20000;++i) {
-			++bb[0];
-			++bb[1234566];
-			ZT_FAST_MEMCPY(cc,bb,1234567);
-			bytes += 1234567.0;
-		}
-		if (cc[0] != bb[0])
-			abort();
-		uint64_t end = OSUtils::now();
-		std::cout << ((bytes / 1048576.0) / ((long double)(end - start) / 1024.0)) << " MiB/second" << std::endl;
-		::free((void *)bb);
-		::free((void *)cc);
-	}
 
 #if 0
 	std::cout << "[other] Testing Hashtable... "; std::cout.flush();
@@ -999,7 +965,7 @@ struct TestPhyHandlers
 	inline void phyOnUnixAccept(PhySocket *sockL,PhySocket *sockN,void **uptrL,void **uptrN) {}
 	inline void phyOnUnixClose(PhySocket *sock,void **uptr) {}
 	inline void phyOnUnixData(PhySocket *sock,void **uptr,void *data,unsigned long len) {}
-	inline void phyOnUnixWritable(PhySocket *sock,void **uptr,bool b) {}
+	inline void phyOnUnixWritable(PhySocket *sock,void **uptr) {}
 #endif // __UNIX_LIKE__
 
 	inline void phyOnFileDescriptorActivity(PhySocket *sock,void **uptr,bool readable,bool writable) {}

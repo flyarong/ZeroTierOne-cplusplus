@@ -1,3 +1,16 @@
+/*
+ * Copyright (c)2019 ZeroTier, Inc.
+ *
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
+ *
+ * Change Date: 2025-01-01
+ *
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
+ */
+/****/
+
 'use strict';
 
 // Names for bits in characteristics -- 0==LSB, 63==MSB
@@ -65,7 +78,8 @@ const OPEN_BLOCK_KEYWORDS = {
 	'tee': true,
 	'watch': true,
 	'redirect': true,
-	'break': true
+	'break': true,
+	'priority': true
 };
 
 // Reserved words that can't be used as tag, capability, or rule set names
@@ -81,6 +95,7 @@ const RESERVED_WORDS = {
 	'watch': true,
 	'redirect': true,
 	'break': true,
+	'priority': true,
 
 	'ztsrc': true,
 	'ztdest': true,
@@ -131,6 +146,7 @@ const KEYWORD_TO_API_MAP = {
 	'watch': 'ACTION_WATCH',
 	'redirect': 'ACTION_REDIRECT',
 	'break': 'ACTION_BREAK',
+	'priority': 'ACTION_PRIORITY',
 
 	'ztsrc': 'MATCH_SOURCE_ZEROTIER_ADDRESS',
 	'ztdest': 'MATCH_DEST_ZEROTIER_ADDRESS',

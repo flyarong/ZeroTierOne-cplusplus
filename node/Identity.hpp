@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_IDENTITY_HPP
 #define ZT_IDENTITY_HPP
@@ -131,7 +118,7 @@ public:
 	inline bool sha512PrivateKey(void *sha) const
 	{
 		if (_privateKey) {
-			SHA512::hash(sha,_privateKey->data,ZT_C25519_PRIVATE_KEY_LEN);
+			SHA512(sha,_privateKey->data,ZT_C25519_PRIVATE_KEY_LEN);
 			return true;
 		}
 		return false;
@@ -186,13 +173,12 @@ public:
 	 *
 	 * @param id Identity to agree with
 	 * @param key Result parameter to fill with key bytes
-	 * @param klen Length of key in bytes
 	 * @return Was agreement successful?
 	 */
-	inline bool agree(const Identity &id,void *key,unsigned int klen) const
+	inline bool agree(const Identity &id,void *const key) const
 	{
 		if (_privateKey) {
-			C25519::agree(*_privateKey,id._publicKey,key,klen);
+			C25519::agree(*_privateKey,id._publicKey,key,ZT_SYMMETRIC_KEY_SIZE);
 			return true;
 		}
 		return false;
@@ -248,7 +234,7 @@ public:
 		if (b[p++] != 0)
 			throw ZT_EXCEPTION_INVALID_SERIALIZED_DATA_INVALID_TYPE;
 
-		ZT_FAST_MEMCPY(_publicKey.data,b.field(p,ZT_C25519_PUBLIC_KEY_LEN),ZT_C25519_PUBLIC_KEY_LEN);
+		memcpy(_publicKey.data,b.field(p,ZT_C25519_PUBLIC_KEY_LEN),ZT_C25519_PUBLIC_KEY_LEN);
 		p += ZT_C25519_PUBLIC_KEY_LEN;
 
 		unsigned int privateKeyLength = (unsigned int)b[p++];
@@ -256,7 +242,7 @@ public:
 			if (privateKeyLength != ZT_C25519_PRIVATE_KEY_LEN)
 				throw ZT_EXCEPTION_INVALID_SERIALIZED_DATA_INVALID_CRYPTOGRAPHIC_TOKEN;
 			_privateKey = new C25519::Private();
-			ZT_FAST_MEMCPY(_privateKey->data,b.field(p,ZT_C25519_PRIVATE_KEY_LEN),ZT_C25519_PRIVATE_KEY_LEN);
+			memcpy(_privateKey->data,b.field(p,ZT_C25519_PRIVATE_KEY_LEN),ZT_C25519_PRIVATE_KEY_LEN);
 			p += ZT_C25519_PRIVATE_KEY_LEN;
 		}
 

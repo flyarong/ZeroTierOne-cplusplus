@@ -1,44 +1,26 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_PEER_HPP
 #define ZT_PEER_HPP
 
-#include <stdint.h>
-
-#include "Constants.hpp"
-
-#include <algorithm>
-#include <utility>
 #include <vector>
-#include <stdexcept>
 
 #include "../include/ZeroTierOne.h"
 
+#include "Constants.hpp"
 #include "RuntimeEnvironment.hpp"
+#include "Node.hpp"
 #include "Path.hpp"
 #include "Address.hpp"
 #include "Utils.hpp"
@@ -49,6 +31,9 @@
 #include "AtomicCounter.hpp"
 #include "Hashtable.hpp"
 #include "Mutex.hpp"
+#include "Bond.hpp"
+#include "BondController.hpp"
+#include "AES.hpp"
 
 #define ZT_PEER_MAX_SERIALIZED_STATE_SIZE (sizeof(Peer) + 32 + (sizeof(Path) * 2))
 
@@ -60,6 +45,9 @@ namespace ZeroTier {
 class Peer
 {
 	friend class SharedPtr<Peer>;
+	friend class SharedPtr<Bond>;
+	friend class Switch;
+	friend class Bond;
 
 private:
 	Peer() {} // disabled to prevent bugs -- should not be constructed uninitialized
@@ -108,11 +96,13 @@ public:
 		const SharedPtr<Path> &path,
 		const unsigned int hops,
 		const uint64_t packetId,
+		const unsigned int payloadLength,
 		const Packet::Verb verb,
 		const uint64_t inRePacketId,
 		const Packet::Verb inReVerb,
 		const bool trustEstablished,
-		const uint64_t networkId);
+		const uint64_t networkId,
+		const int32_t flowId);
 
 	/**
 	 * Check whether we have an active path to this peer via the given address
@@ -145,20 +135,55 @@ public:
 	 */
 	inline bool sendDirect(void *tPtr,const void *data,unsigned int len,int64_t now,bool force)
 	{
-		SharedPtr<Path> bp(getBestPath(now,force));
+		SharedPtr<Path> bp(getAppropriatePath(now,force));
 		if (bp)
 			return bp->send(RR,tPtr,data,len,now);
 		return false;
 	}
 
 	/**
-	 * Get the best current direct path
+	 * Record incoming packets to
+	 *
+	 * @param tPtr Thread pointer to be handed through to any callbacks called as a result of this call
+	 * @param path Path over which packet was received
+	 * @param packetId Packet ID
+	 * @param payloadLength Length of packet data payload
+	 * @param verb Packet verb
+	 * @param flowId Flow ID
+	 * @param now Current time
+	 */
+	void recordIncomingPacket(const SharedPtr<Path> &path, const uint64_t packetId,
+		uint16_t payloadLength, const Packet::Verb verb, const int32_t flowId, int64_t now);
+
+	/**
+	 *
+	 * @param path Path over which packet is being sent
+	 * @param packetId Packet ID
+	 * @param payloadLength Length of packet data payload
+	 * @param verb Packet verb
+	 * @param flowId Flow ID
+	 * @param now Current time
+	 */
+	void recordOutgoingPacket(const SharedPtr<Path> &path, const uint64_t packetId,
+		uint16_t payloadLength, const Packet::Verb verb, const int32_t flowId, int64_t now);
+
+	/**
+	 * Record an invalid incoming packet. This packet failed
+	 * MAC/compression/cipher checks and will now contribute to a
+	 * Packet Error Ratio (PER).
+	 *
+	 * @param path Path over which packet was received
+	 */
+	void recordIncomingInvalidPacket(const SharedPtr<Path>& path);
+
+	/**
+	 * Get the most appropriate direct path based on current multipath and QoS configuration
 	 *
 	 * @param now Current time
 	 * @param includeExpired If true, include even expired paths
 	 * @return Best current path or NULL if none
 	 */
-	SharedPtr<Path> getBestPath(int64_t now,bool includeExpired) const;
+	SharedPtr<Path> getAppropriatePath(int64_t now, bool includeExpired, int32_t flowId = -1);
 
 	/**
 	 * Send VERB_RENDEZVOUS to this and another peer via the best common IP scope and path
@@ -199,6 +224,13 @@ public:
 	 * @param now Current time
 	 */
 	void tryMemorizedPath(void *tPtr,int64_t now);
+
+	/**
+	 * A check to be performed periodically which determines whether multipath communication is
+	 * possible with this peer. This check should be performed early in the life-cycle of the peer
+	 * as well as during the process of learning new paths.
+	 */
+	void performMultipathStateCheck(void *tPtr, int64_t now);
 
 	/**
 	 * Send pings or keepalives depending on configured timeouts
@@ -268,14 +300,18 @@ public:
 	inline int64_t isActive(int64_t now) const { return ((now - _lastNontrivialReceive) < ZT_PEER_ACTIVITY_TIMEOUT); }
 
 	/**
-	 * @return Latency in milliseconds of best path or 0xffff if unknown / no paths
+	 * @return Latency in milliseconds of best/aggregate path or 0xffff if unknown / no paths
 	 */
-	inline unsigned int latency(const int64_t now) const
+	inline unsigned int latency(const int64_t now)
 	{
-		SharedPtr<Path> bp(getBestPath(now,false));
-		if (bp)
-			return bp->latency();
-		return 0xffff;
+		if (_canUseMultipath) {
+			return (int)_lastComputedAggregateMeanLatency;
+		} else {
+			SharedPtr<Path> bp(getAppropriatePath(now,false));
+			if (bp)
+				return bp->latency();
+			return 0xffff;
+		}
 	}
 
 	/**
@@ -289,7 +325,7 @@ public:
 	 *
 	 * @return Relay quality score computed from latency and other factors, lower is better
 	 */
-	inline unsigned int relayQuality(const int64_t now) const
+	inline unsigned int relayQuality(const int64_t now)
 	{
 		const uint64_t tsr = now - _lastReceive;
 		if (tsr >= ZT_PEER_ACTIVITY_TIMEOUT)
@@ -382,39 +418,35 @@ public:
 	}
 
 	/**
-	 * Rate limit gate for inbound ECHO requests
+	 * Rate limit gate for inbound ECHO requests. This rate limiter works
+	 * by draining a certain number of requests per unit time. Each peer may
+	 * theoretically receive up to ZT_ECHO_CUTOFF_LIMIT requests per second.
 	 */
 	inline bool rateGateEchoRequest(const int64_t now)
 	{
-		if ((now - _lastEchoRequestReceived) >= ZT_PEER_GENERAL_RATE_LIMIT) {
-			_lastEchoRequestReceived = now;
-			return true;
+		/*
+		// TODO: Rethink this
+		if (_canUseMultipath) {
+			_echoRequestCutoffCount++;
+			int numToDrain = (now - _lastEchoCheck) / ZT_ECHO_DRAINAGE_DIVISOR;
+			_lastEchoCheck = now;
+			fprintf(stderr, "ZT_ECHO_CUTOFF_LIMIT=%d, (now - _lastEchoCheck)=%d, numToDrain=%d, ZT_ECHO_DRAINAGE_DIVISOR=%d\n", ZT_ECHO_CUTOFF_LIMIT, (now - _lastEchoCheck), numToDrain, ZT_ECHO_DRAINAGE_DIVISOR);
+			if (_echoRequestCutoffCount > numToDrain) {
+				_echoRequestCutoffCount-=numToDrain;
+			}
+			else {
+				_echoRequestCutoffCount = 0;
+			}
+			return (_echoRequestCutoffCount < ZT_ECHO_CUTOFF_LIMIT);
+		} else {
+			if ((now - _lastEchoRequestReceived) >= (ZT_PEER_GENERAL_RATE_LIMIT)) {
+				_lastEchoRequestReceived = now;
+				return true;
+			}
+			return false;
 		}
-		return false;
-	}
-
-	/**
-	 * Rate gate incoming requests for network COM
-	 */
-	inline bool rateGateIncomingComRequest(const int64_t now)
-	{
-		if ((now - _lastComRequestReceived) >= ZT_PEER_GENERAL_RATE_LIMIT) {
-			_lastComRequestReceived = now;
-			return true;
-		}
-		return false;
-	}
-
-	/**
-	 * Rate gate outgoing requests for network COM
-	 */
-	inline bool rateGateOutgoingComRequest(const int64_t now)
-	{
-		if ((now - _lastComRequestSent) >= ZT_PEER_GENERAL_RATE_LIMIT) {
-			_lastComRequestSent = now;
-			return true;
-		}
-		return false;
+		*/
+		return true;
 	}
 
 	/**
@@ -489,6 +521,24 @@ public:
 		}
 	}
 
+	/**
+	 *
+	 * @return
+	 */
+	SharedPtr<Bond> bond() { return _bondToPeer; }
+
+	/**
+	 *
+	 * @return
+	 */
+	inline int8_t bondingPolicy() { return _bondingPolicy; }
+
+	//const AES *aesKeysIfSupported() const
+	//{ return (const AES *)0; }
+
+	const AES *aesKeysIfSupported() const
+	{ return (_vProto >= 12) ? _aesKeys : (const AES *)0; }
+
 private:
 	struct _PeerPath
 	{
@@ -498,7 +548,8 @@ private:
 		long priority; // >= 1, higher is better
 	};
 
-	uint8_t _key[ZT_PEER_SECRET_KEY_LENGTH];
+	uint8_t _key[ZT_SYMMETRIC_KEY_SIZE];
+	AES _aesKeys[2];
 
 	const RuntimeEnvironment *RR;
 
@@ -507,14 +558,15 @@ private:
 	int64_t _lastTriedMemorizedPath;
 	int64_t _lastDirectPathPushSent;
 	int64_t _lastDirectPathPushReceive;
+	int64_t _lastEchoRequestReceived;
 	int64_t _lastCredentialRequestSent;
 	int64_t _lastWhoisRequestReceived;
-	int64_t _lastEchoRequestReceived;
-	int64_t _lastComRequestReceived;
-	int64_t _lastComRequestSent;
 	int64_t _lastCredentialsReceived;
 	int64_t _lastTrustEstablishedPacketReceived;
 	int64_t _lastSentFullHello;
+	int64_t _lastEchoCheck;
+
+	unsigned char _freeRandomByte;
 
 	uint16_t _vProto;
 	uint16_t _vMajor;
@@ -528,8 +580,22 @@ private:
 
 	unsigned int _directPathPushCutoffCount;
 	unsigned int _credentialsCutoffCount;
+	unsigned int _echoRequestCutoffCount;
 
 	AtomicCounter __refCount;
+
+	bool _remotePeerMultipathEnabled;
+	int _uniqueAlivePathCount;
+	bool _localMultipathSupported;
+	bool _remoteMultipathSupported;
+	bool _canUseMultipath;
+
+	volatile bool _shouldCollectPathStatistics;
+	volatile int8_t _bondingPolicy;
+
+	int32_t _lastComputedAggregateMeanLatency;
+
+	SharedPtr<Bond> _bondToPeer;
 };
 
 } // namespace ZeroTier

@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_MULTICASTER_HPP
 #define ZT_MULTICASTER_HPP
@@ -158,33 +145,6 @@ public:
 	 */
 	void clean(int64_t now);
 
-	/**
-	 * Add an authorization credential
-	 *
-	 * The Multicaster keeps its own track of when valid credentials of network
-	 * membership are presented. This allows it to control MULTICAST_LIKE
-	 * GATHER authorization for networks this node does not belong to.
-	 *
-	 * @param com Certificate of membership
-	 * @param alreadyValidated If true, COM has already been checked and found to be valid and signed
-	 */
-	void addCredential(void *tPtr,const CertificateOfMembership &com,bool alreadyValidated);
-
-	/**
-	 * Check authorization for GATHER and LIKE for non-network-members
-	 *
-	 * @param a Address of peer
-	 * @param nwid Network ID
-	 * @param now Current time
-	 * @return True if GATHER and LIKE should be allowed
-	 */
-	bool cacheAuthorized(const Address &a,const uint64_t nwid,const int64_t now) const
-	{
-		Mutex::Lock _l(_gatherAuth_m);
-		const uint64_t *p = _gatherAuth.get(_GatherAuthKey(nwid,a));
-		return ((p)&&((now - *p) < ZT_MULTICAST_CREDENTIAL_EXPIRATON));
-	}
-
 private:
 	struct Key
 	{
@@ -195,6 +155,7 @@ private:
 		MulticastGroup mg;
 
 		inline bool operator==(const Key &k) const { return ((nwid == k.nwid)&&(mg == k.mg)); }
+		inline bool operator!=(const Key &k) const { return ((nwid != k.nwid)||(mg != k.mg)); }
 		inline unsigned long hashCode() const { return (mg.hashCode() ^ (unsigned long)(nwid ^ (nwid >> 32))); }
 	};
 
@@ -202,6 +163,13 @@ private:
 	{
 		MulticastGroupMember() {}
 		MulticastGroupMember(const Address &a,uint64_t ts) : address(a),timestamp(ts) {}
+
+		inline bool operator<(const MulticastGroupMember &a) const { return (address < a.address); }
+		inline bool operator==(const MulticastGroupMember &a) const { return (address == a.address); }
+		inline bool operator!=(const MulticastGroupMember &a) const { return (address != a.address); }
+		inline bool operator<(const Address &a) const { return (address < a); }
+		inline bool operator==(const Address &a) const { return (address == a); }
+		inline bool operator!=(const Address &a) const { return (address != a); }
 
 		Address address;
 		uint64_t timestamp; // time of last notification
@@ -222,18 +190,6 @@ private:
 
 	Hashtable<Multicaster::Key,MulticastGroupStatus> _groups;
 	Mutex _groups_m;
-
-	struct _GatherAuthKey
-	{
-		_GatherAuthKey() : member(0),networkId(0) {}
-		_GatherAuthKey(const uint64_t nwid,const Address &a) : member(a.toInt()),networkId(nwid) {}
-		inline unsigned long hashCode() const { return (unsigned long)(member ^ networkId); }
-		inline bool operator==(const _GatherAuthKey &k) const { return ((member == k.member)&&(networkId == k.networkId)); }
-		uint64_t member;
-		uint64_t networkId;
-	};
-	Hashtable< _GatherAuthKey,uint64_t > _gatherAuth;
-	Mutex _gatherAuth_m;
 };
 
 } // namespace ZeroTier

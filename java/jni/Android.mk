@@ -6,17 +6,27 @@ LOCAL_MODULE := ZeroTierOneJNI
 LOCAL_C_INCLUDES := \
     $(ZT1)/include \
     $(ZT1)/node \
-    $(ZT1)/osdep \
-    $(ZT1)/ext/miniupnpc \
-    $(ZT1)/ext/libnatpmp
+    $(ZT1)/osdep
 
-LOCAL_LDLIBS := -llog -latomic
+LOCAL_LDLIBS := -llog
 # LOCAL_CFLAGS := -g
 
+APP_UNIFIED_HEADERS := true
+
 LOCAL_CFLAGS := -DZT_USE_MINIUPNPC
+ifeq ($(TARGET_ARCH_ABI),x86_64)
+    LOCAL_CXXFLAGS := -maes -mpclmul -msse4.1
+endif
+ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
+    LOCAL_ARM_NEON := true
+    LOCAL_CXXFLAGS := -march=armv8-a+crypto -mfloat-abi=softfp -mfpu=neon -maes -isystem $NDK/sysroot/usr/include/$TRIPLE
+endif
 
 # ZeroTierOne SDK source files
 LOCAL_SRC_FILES := \
+    $(ZT1)/node/AES.cpp \
+    $(ZT1)/node/Bond.cpp \
+    $(ZT1)/node/BondController.cpp \
     $(ZT1)/node/C25519.cpp \
 	$(ZT1)/node/Capability.cpp \
 	$(ZT1)/node/CertificateOfMembership.cpp \
@@ -43,26 +53,7 @@ LOCAL_SRC_FILES := \
 	$(ZT1)/node/Topology.cpp \
 	$(ZT1)/node/Trace.cpp \
 	$(ZT1)/node/Utils.cpp \
-	$(ZT1)/osdep/OSUtils.cpp \
-	$(ZT1)/osdep/PortMapper.cpp
-
-# libminiupnpc and libnatpmp files
-LOCAL_SRC_FILES += \
-	$(ZT1)/ext/miniupnpc/connecthostport.c \
-	$(ZT1)/ext/miniupnpc/igd_desc_parse.c \
-	$(ZT1)/ext/miniupnpc/minisoap.c \
-	$(ZT1)/ext/miniupnpc/minissdpc.c \
-	$(ZT1)/ext/miniupnpc/miniupnpc.c \
-	$(ZT1)/ext/miniupnpc/miniwget.c \
-	$(ZT1)/ext/miniupnpc/minixml.c \
-	$(ZT1)/ext/miniupnpc/portlistingparse.c \
-	$(ZT1)/ext/miniupnpc/receivedata.c \
-	$(ZT1)/ext/miniupnpc/upnpcommands.c \
-	$(ZT1)/ext/miniupnpc/upnpdev.c \
-	$(ZT1)/ext/miniupnpc/upnperrors.c \
-	$(ZT1)/ext/miniupnpc/upnpreplyparse.c \
-	$(ZT1)/ext/libnatpmp/natpmp.c \
-	$(ZT1)/ext/libnatpmp/getgateway.c
+	$(ZT1)/osdep/OSUtils.cpp
 
 # JNI Files
 LOCAL_SRC_FILES += \

@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_CERTIFICATEOFMEMBERSHIP_HPP
 #define ZT_CERTIFICATEOFMEMBERSHIP_HPP
@@ -112,15 +99,8 @@ public:
 	/**
 	 * Create an empty certificate of membership
 	 */
-	CertificateOfMembership()
-	{
-		memset(this,0,sizeof(CertificateOfMembership));
-	}
-
-	CertificateOfMembership(const CertificateOfMembership &c)
-	{
-		ZT_FAST_MEMCPY(this,&c,sizeof(CertificateOfMembership));
-	}
+	CertificateOfMembership() :
+		_qualifierCount(0) {}
 
 	/**
 	 * Create from required fields common to all networks
@@ -143,12 +123,6 @@ public:
 		_qualifiers[2].maxDelta = 0xffffffffffffffffULL;
 		_qualifierCount = 3;
 		memset(_signature.data,0,ZT_C25519_SIGNATURE_LEN);
-	}
-
-	inline CertificateOfMembership &operator=(const CertificateOfMembership &c)
-	{
-		ZT_FAST_MEMCPY(this,&c,sizeof(CertificateOfMembership));
-		return *this;
 	}
 
 	/**
@@ -243,7 +217,7 @@ public:
 	 * Compare two certificates for parameter agreement
 	 *
 	 * This compares this certificate with the other and returns true if all
-	 * paramters in this cert are present in the other and if they agree to
+	 * parameters in this cert are present in the other and if they agree to
 	 * within this cert's max delta value for each given parameter.
 	 *
 	 * Tuples present in other but not in this cert are ignored, but any
@@ -329,7 +303,7 @@ public:
 		p += ZT_ADDRESS_LENGTH;
 
 		if (_signedBy) {
-			ZT_FAST_MEMCPY(_signature.data,b.field(p,ZT_C25519_SIGNATURE_LEN),ZT_C25519_SIGNATURE_LEN);
+			memcpy(_signature.data,b.field(p,ZT_C25519_SIGNATURE_LEN),ZT_C25519_SIGNATURE_LEN);
 			p += ZT_C25519_SIGNATURE_LEN;
 		}
 

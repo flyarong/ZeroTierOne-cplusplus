@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include <algorithm>
 
@@ -42,8 +29,7 @@ namespace ZeroTier {
 
 Multicaster::Multicaster(const RuntimeEnvironment *renv) :
 	RR(renv),
-	_groups(256),
-	_gatherAuth(256)
+	_groups(32)
 {
 }
 
@@ -190,7 +176,7 @@ void Multicaster::send(
 				for(unsigned int i=0;i<multicastReplicatorCount;++i) {
 					const SharedPtr<Peer> p(RR->topology->getPeerNoCache(multicastReplicators[i]));
 					if ((p)&&(p->isAlive(now))) {
-						const SharedPtr<Path> pp(p->getBestPath(now,false));
+						const SharedPtr<Path> pp(p->getAppropriatePath(now,false));
 						if ((pp)&&(pp->latency() < bestMulticastReplicatorLatency)) {
 							bestMulticastReplicatorLatency = pp->latency();
 							bestMulticastReplicatorPath = pp;
@@ -208,7 +194,7 @@ void Multicaster::send(
 					outp.append((uint16_t)etherType);
 					outp.append(data,len);
 					if (!network->config().disableCompression()) outp.compress();
-					outp.armor(bestMulticastReplicator->key(),true);
+					outp.armor(bestMulticastReplicator->key(),true,bestMulticastReplicator->aesKeysIfSupported());
 					bestMulticastReplicatorPath->send(RR,tPtr,outp.data(),outp.size(),now);
 					return;
 				}
@@ -276,6 +262,11 @@ void Multicaster::send(
 				}
 			}
 		} else {
+			if (gs.txQueue.size() >= ZT_TX_QUEUE_SIZE) {
+				RR->t->outgoingNetworkFrameDropped(tPtr,network,src,mg.mac(),etherType,0,len,"multicast TX queue is full");
+				return;
+			}
+
 			const unsigned int gatherLimit = (limit - (unsigned int)gs.members.size()) + 1;
 
 			if ((gs.members.empty())||((now - gs.lastExplicitGather) >= ZT_MULTICAST_EXPLICIT_GATHER_DELAY)) {
@@ -415,25 +406,6 @@ void Multicaster::clean(int64_t now)
 			}
 		}
 	}
-
-	{
-		Mutex::Lock _l(_gatherAuth_m);
-		_GatherAuthKey *k = (_GatherAuthKey *)0;
-		uint64_t *ts = NULL;
-		Hashtable<_GatherAuthKey,uint64_t>::Iterator i(_gatherAuth);
-		while (i.next(k,ts)) {
-			if ((now - *ts) >= ZT_MULTICAST_CREDENTIAL_EXPIRATON)
-				_gatherAuth.erase(*k);
-		}
-	}
-}
-
-void Multicaster::addCredential(void *tPtr,const CertificateOfMembership &com,bool alreadyValidated)
-{
-	if ((alreadyValidated)||(com.verify(RR,tPtr) == 0)) {
-		Mutex::Lock _l(_gatherAuth_m);
-		_gatherAuth[_GatherAuthKey(com.networkId(),com.issuedTo())] = RR->node->now();
-	}
 }
 
 void Multicaster::_add(void *tPtr,int64_t now,uint64_t nwid,const MulticastGroup &mg,MulticastGroupStatus &gs,const Address &member)
@@ -444,14 +416,16 @@ void Multicaster::_add(void *tPtr,int64_t now,uint64_t nwid,const MulticastGroup
 	if (member == RR->identity.address())
 		return;
 
-	for(std::vector<MulticastGroupMember>::iterator m(gs.members.begin());m!=gs.members.end();++m) {
+	std::vector<MulticastGroupMember>::iterator m(std::lower_bound(gs.members.begin(),gs.members.end(),member));
+	if (m != gs.members.end()) {
 		if (m->address == member) {
 			m->timestamp = now;
 			return;
 		}
+		gs.members.insert(m,MulticastGroupMember(member,now));
+	} else {
+		gs.members.push_back(MulticastGroupMember(member,now));
 	}
-
-	gs.members.push_back(MulticastGroupMember(member,now));
 
 	for(std::list<OutboundMulticast>::iterator tx(gs.txQueue.begin());tx!=gs.txQueue.end();) {
 		if (tx->atLimit())

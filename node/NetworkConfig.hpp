@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_NETWORKCONFIG_HPP
 #define ZT_NETWORKCONFIG_HPP
@@ -39,6 +26,7 @@
 
 #include "Constants.hpp"
 #include "Buffer.hpp"
+#include "DNS.hpp"
 #include "InetAddress.hpp"
 #include "MulticastGroup.hpp"
 #include "Address.hpp"
@@ -188,6 +176,8 @@ namespace ZeroTier {
 #define ZT_NETWORKCONFIG_DICT_KEY_TAGS "TAG"
 // tags (binary blobs)
 #define ZT_NETWORKCONFIG_DICT_KEY_CERTIFICATES_OF_OWNERSHIP "COO"
+// dns (binary blobs)
+#define ZT_NETWORKCONFIG_DICT_KEY_DNS "DNS"
 
 // Legacy fields -- these are obsoleted but are included when older clients query
 
@@ -221,9 +211,37 @@ namespace ZeroTier {
 class NetworkConfig
 {
 public:
-	NetworkConfig() { memset(this,0,sizeof(NetworkConfig)); }
-	NetworkConfig(const NetworkConfig &nc) { ZT_FAST_MEMCPY(this,&nc,sizeof(NetworkConfig)); }
-	inline NetworkConfig &operator=(const NetworkConfig &nc) { ZT_FAST_MEMCPY(this,&nc,sizeof(NetworkConfig)); return *this; }
+	NetworkConfig() :
+		networkId(0),
+		timestamp(0),
+		credentialTimeMaxDelta(0),
+		revision(0),
+		issuedTo(),
+		remoteTraceTarget(),
+		flags(0),
+		remoteTraceLevel(Trace::LEVEL_NORMAL),
+		mtu(0),
+		multicastLimit(0),
+		specialistCount(0),
+		routeCount(0),
+		staticIpCount(0),
+		ruleCount(0),
+		capabilityCount(0),
+		tagCount(0),
+		certificateOfOwnershipCount(0),
+		capabilities(),
+		tags(),
+		certificatesOfOwnership(),
+		type(ZT_NETWORK_TYPE_PRIVATE),
+		dnsCount(0)
+	{
+		name[0] = 0;
+		memset(specialists, 0, sizeof(uint64_t)*ZT_MAX_NETWORK_SPECIALISTS);
+		memset(routes, 0, sizeof(ZT_VirtualNetworkRoute)*ZT_MAX_NETWORK_ROUTES);
+		memset(staticIps, 0, sizeof(InetAddress)*ZT_MAX_ZT_ASSIGNED_ADDRESSES);
+		memset(rules, 0, sizeof(ZT_VirtualNetworkRule)*ZT_MAX_NETWORK_RULES);
+		memset(&dns, 0, sizeof(ZT_VirtualNetworkDNS));
+	}
 
 	/**
 	 * Write this network config to a dictionary for transport
@@ -255,7 +273,18 @@ public:
 	/**
 	 * @return True if frames should not be compressed
 	 */
-	inline bool disableCompression() const { return ((this->flags & ZT_NETWORKCONFIG_FLAG_DISABLE_COMPRESSION) != 0); }
+	inline bool disableCompression() const
+	{
+#ifndef ZT_DISABLE_COMPRESSION
+		return ((this->flags & ZT_NETWORKCONFIG_FLAG_DISABLE_COMPRESSION) != 0);
+#else
+		/* Compression is disabled for libzt builds since it causes non-obvious chaotic
+		interference with lwIP's TCP congestion algorithm. Compression is also disabled
+		for some NAS builds due to the usage of low-performance processors in certain
+		older and budget models. */
+		return false;
+#endif
+	}
 
 	/**
 	 * @return Network type is public (no access control)
@@ -562,9 +591,19 @@ public:
 	char name[ZT_MAX_NETWORK_SHORT_NAME_LENGTH + 1];
 
 	/**
-	 * Certficiate of membership (for private networks)
+	 * Certificate of membership (for private networks)
 	 */
 	CertificateOfMembership com;
+
+	/**
+	 * Number of ZT-pushed DNS configurations
+	 */
+	unsigned int dnsCount;
+
+	/**
+	 * ZT pushed DNS configuration
+	 */
+	ZT_VirtualNetworkDNS dns;
 };
 
 } // namespace ZeroTier

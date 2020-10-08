@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 /**
  * @file
@@ -76,8 +63,11 @@
 #ifdef __APPLE__
   #define ZT_THREAD_ID (long)0 // (long)gettid()
 #endif
+#ifdef __FreeBSD__
+  #define ZT_THREAD_ID (long)0 // (long)gettid()
+#endif
 #ifdef _WIN32
-  #define ZT_THREAD_ID (long)0 // 
+  #define ZT_THREAD_ID (long)0 //
 #endif
 #if defined(__JNI_LIB__)
 		#include <jni.h>
@@ -86,7 +76,7 @@
 		#include <android/log.h>
 		#define ZT_LOG_TAG "ZTSDK"
 #endif
-#if defined(ZT_TRACE)
+#if defined(ZT_DEBUG_TRACE)
 	#if ZT_MSG_INFO == true
 		#if defined(__ANDROID__)
 			#define DEBUG_INFO(fmt, args...) ((void)__android_log_print(ANDROID_LOG_VERBOSE, ZT_LOG_TAG, \
@@ -96,7 +86,7 @@
 			#define DEBUG_INFO(fmt, ...) fprintf(stderr, ZT_GRN "INFO [%ld]: %17s:%5d:%25s: " fmt "\n" \
 					ZT_RESET, ZT_THREAD_ID, ZT_FILENAME, __LINE__, __FUNCTION__, __VA_ARGS__)
 		#endif
-		#if defined(__linux__) or defined(__APPLE__)
+		#if defined(__linux__) or defined(__APPLE__) or defined(__FreeBSD__)
 			#define DEBUG_INFO(fmt, args ...) fprintf(stderr, ZT_GRN "INFO [%ld]: %17s:%5d:%25s: " fmt "\n" \
 					ZT_RESET, ZT_THREAD_ID, ZT_FILENAME, __LINE__, __FUNCTION__, ##args)
 		#endif

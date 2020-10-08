@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_CERTIFICATEOFOWNERSHIP_HPP
 #define ZT_CERTIFICATEOFOWNERSHIP_HPP
@@ -69,19 +56,16 @@ public:
 
 	CertificateOfOwnership()
 	{
-		memset(this,0,sizeof(CertificateOfOwnership));
+		memset(reinterpret_cast<void *>(this),0,sizeof(CertificateOfOwnership));
 	}
 
-	CertificateOfOwnership(const uint64_t nwid,const int64_t ts,const Address &issuedTo,const uint32_t id) :
-		_networkId(nwid),
-		_ts(ts),
-		_flags(0),
-		_id(id),
-		_thingCount(0),
-		_issuedTo(issuedTo)
+	CertificateOfOwnership(const uint64_t nwid,const int64_t ts,const Address &issuedTo,const uint32_t id)
 	{
-		memset(_thingTypes,0,sizeof(_thingTypes));
-		memset(_thingValues,0,sizeof(_thingValues));
+		memset(reinterpret_cast<void *>(this),0,sizeof(CertificateOfOwnership));
+		_networkId = nwid;
+		_ts = ts;
+		_id = id;
+		_issuedTo = issuedTo;
 	}
 
 	inline uint64_t networkId() const { return _networkId; }
@@ -115,11 +99,11 @@ public:
 		if (_thingCount >= ZT_CERTIFICATEOFOWNERSHIP_MAX_THINGS) return;
 		if (ip.ss_family == AF_INET) {
 			_thingTypes[_thingCount] = THING_IPV4_ADDRESS;
-			ZT_FAST_MEMCPY(_thingValues[_thingCount],&(reinterpret_cast<const struct sockaddr_in *>(&ip)->sin_addr.s_addr),4);
+			memcpy(_thingValues[_thingCount],&(reinterpret_cast<const struct sockaddr_in *>(&ip)->sin_addr.s_addr),4);
 			++_thingCount;
 		} else if (ip.ss_family == AF_INET6) {
 			_thingTypes[_thingCount] = THING_IPV6_ADDRESS;
-			ZT_FAST_MEMCPY(_thingValues[_thingCount],reinterpret_cast<const struct sockaddr_in6 *>(&ip)->sin6_addr.s6_addr,16);
+			memcpy(_thingValues[_thingCount],reinterpret_cast<const struct sockaddr_in6 *>(&ip)->sin6_addr.s6_addr,16);
 			++_thingCount;
 		}
 	}
@@ -188,7 +172,7 @@ public:
 	{
 		unsigned int p = startAt;
 
-		memset(this,0,sizeof(CertificateOfOwnership));
+		*this = CertificateOfOwnership();
 
 		_networkId = b.template at<uint64_t>(p); p += 8;
 		_ts = b.template at<uint64_t>(p); p += 8;
@@ -198,7 +182,7 @@ public:
 		for(unsigned int i=0,j=_thingCount;i<j;++i) {
 			if (i < ZT_CERTIFICATEOFOWNERSHIP_MAX_THINGS) {
 				_thingTypes[i] = (uint8_t)b[p++];
-				ZT_FAST_MEMCPY(_thingValues[i],b.field(p,ZT_CERTIFICATEOFOWNERSHIP_MAX_THING_VALUE_SIZE),ZT_CERTIFICATEOFOWNERSHIP_MAX_THING_VALUE_SIZE);
+				memcpy(_thingValues[i],b.field(p,ZT_CERTIFICATEOFOWNERSHIP_MAX_THING_VALUE_SIZE),ZT_CERTIFICATEOFOWNERSHIP_MAX_THING_VALUE_SIZE);
 				p += ZT_CERTIFICATEOFOWNERSHIP_MAX_THING_VALUE_SIZE;
 			}
 		}
@@ -209,7 +193,7 @@ public:
 			if (b.template at<uint16_t>(p) != ZT_C25519_SIGNATURE_LEN)
 				throw ZT_EXCEPTION_INVALID_SERIALIZED_DATA_INVALID_CRYPTOGRAPHIC_TOKEN;
 			p += 2;
-			ZT_FAST_MEMCPY(_signature.data,b.field(p,ZT_C25519_SIGNATURE_LEN),ZT_C25519_SIGNATURE_LEN); p += ZT_C25519_SIGNATURE_LEN;
+			memcpy(_signature.data,b.field(p,ZT_C25519_SIGNATURE_LEN),ZT_C25519_SIGNATURE_LEN); p += ZT_C25519_SIGNATURE_LEN;
 		} else {
 			p += 2 + b.template at<uint16_t>(p);
 		}

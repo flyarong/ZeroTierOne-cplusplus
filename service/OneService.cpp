@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2018  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +21,9 @@
 #include <vector>
 #include <algorithm>
 #include <list>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 #include "../version.h"
 #include "../include/ZeroTierOne.h"
@@ -49,6 +39,8 @@
 #include "../node/Salsa20.hpp"
 #include "../node/Poly1305.hpp"
 #include "../node/SHA512.hpp"
+#include "../node/Bond.hpp"
+#include "../node/Peer.hpp"
 
 #include "../osdep/Phy.hpp"
 #include "../osdep/Thread.hpp"
@@ -57,6 +49,8 @@
 #include "../osdep/PortMapper.hpp"
 #include "../osdep/Binder.hpp"
 #include "../osdep/ManagedRoute.hpp"
+#include "../osdep/BlockingQueue.hpp"
+#include "../osdep/Link.hpp"
 
 #include "OneService.hpp"
 #include "SoftwareUpdater.hpp"
@@ -67,12 +61,21 @@
 #include <ShlObj.h>
 #include <netioapi.h>
 #include <iphlpapi.h>
+//#include <unistd.h>
+#define stat _stat
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <ifaddrs.h>
+#endif
+
+#ifdef __APPLE__
+#include "../osdep/MacDNSHelper.hpp"
+#elif defined(__WINDOWS__)
+#include "../osdep/WinDNSHelper.hpp"
 #endif
 
 #ifdef ZT_USE_SYSTEM_HTTP_PARSER
@@ -81,57 +84,27 @@
 #include "../ext/http-parser/http_parser.h"
 #endif
 
+#if ZT_VAULT_SUPPORT
+extern "C" {
+#include <curl/curl.h>
+}
+#endif
+
 #include "../ext/json/json.hpp"
 
 using json = nlohmann::json;
 
 #include "../controller/EmbeddedNetworkController.hpp"
-
-#ifdef ZT_USE_TEST_TAP
-
-#include "../osdep/TestEthernetTap.hpp"
-namespace ZeroTier { typedef TestEthernetTap EthernetTap; }
-
-#else
-
-#ifdef ZT_SDK
-
-#include "../controller/EmbeddedNetworkController.hpp"
-#include "../node/Node.hpp"
-// Use the virtual netcon endpoint instead of a tun/tap port driver
-#include "../include/VirtualTap.h"
-namespace ZeroTier { typedef VirtualTap EthernetTap; }
-
-#else
-
-#ifdef __APPLE__
-#include "../osdep/OSXEthernetTap.hpp"
-namespace ZeroTier { typedef OSXEthernetTap EthernetTap; }
-#endif // __APPLE__
-#ifdef __LINUX__
-#include "../osdep/LinuxEthernetTap.hpp"
-namespace ZeroTier { typedef LinuxEthernetTap EthernetTap; }
-#endif // __LINUX__
+#include "../controller/PostgreSQL.hpp"
+#include "../controller/Redis.hpp"
+#include "../osdep/EthernetTap.hpp"
 #ifdef __WINDOWS__
 #include "../osdep/WindowsEthernetTap.hpp"
-namespace ZeroTier { typedef WindowsEthernetTap EthernetTap; }
-#endif // __WINDOWS__
-#ifdef __FreeBSD__
-#include "../osdep/BSDEthernetTap.hpp"
-namespace ZeroTier { typedef BSDEthernetTap EthernetTap; }
-#endif // __FreeBSD__
-#ifdef __NetBSD__
-#include "../osdep/NetBSDEthernetTap.hpp"
-namespace ZeroTier { typedef NetBSDEthernetTap EthernetTap; }
-#endif // __NetBSD__
-#ifdef __OpenBSD__
-#include "../osdep/BSDEthernetTap.hpp"
-namespace ZeroTier { typedef BSDEthernetTap EthernetTap; }
-#endif // __OpenBSD__
+#endif
 
-#endif // ZT_SERVICE_NETCON
-
-#endif // ZT_USE_TEST_TAP
+#ifndef ZT_SOFTWARE_UPDATE_DEFAULT
+#define ZT_SOFTWARE_UPDATE_DEFAULT "disable"
+#endif
 
 // Sanity limits for HTTP
 #define ZT_MAX_HTTP_MESSAGE_SIZE (1024 * 1024 * 64)
@@ -145,7 +118,9 @@ namespace ZeroTier { typedef BSDEthernetTap EthernetTap; }
 #define ZT_TAP_CHECK_MULTICAST_INTERVAL 5000
 
 // TCP fallback relay (run by ZeroTier, Inc. -- this will eventually go away)
+#ifndef ZT_SDK
 #define ZT_TCP_FALLBACK_RELAY "204.80.128.1/443"
+#endif
 
 // Frequency at which we re-resolve the TCP fallback relay
 #define ZT_TCP_FALLBACK_RERESOLVE_DELAY 86400000
@@ -162,9 +137,19 @@ namespace ZeroTier { typedef BSDEthernetTap EthernetTap; }
 // TCP activity timeout
 #define ZT_TCP_ACTIVITY_TIMEOUT 60000
 
+#if ZT_VAULT_SUPPORT
+size_t curlResponseWrite(void *ptr, size_t size, size_t nmemb, std::string *data)
+{
+	data->append((char*)ptr, size * nmemb);
+	return size * nmemb;
+}
+#endif
+
 namespace ZeroTier {
 
 namespace {
+
+static const InetAddress NULL_INET_ADDR;
 
 // Fake TLS hello for TCP tunnel outgoing connections (TUNNELED mode)
 static const char ZT_TCP_TUNNEL_HELLO[9] = { 0x17,0x03,0x03,0x00,0x04,(char)ZEROTIER_ONE_VERSION_MAJOR,(char)ZEROTIER_ONE_VERSION_MINOR,(char)((ZEROTIER_ONE_VERSION_REVISION >> 8) & 0xff),(char)(ZEROTIER_ONE_VERSION_REVISION & 0xff) };
@@ -224,6 +209,7 @@ static void _networkToJson(nlohmann::json &nj,const ZT_VirtualNetworkConfig *nc,
 	nj["allowManaged"] = localSettings.allowManaged;
 	nj["allowGlobal"] = localSettings.allowGlobal;
 	nj["allowDefault"] = localSettings.allowDefault;
+	nj["allowDNS"] = localSettings.allowDNS;
 
 	nlohmann::json aa = nlohmann::json::array();
 	for(unsigned int i=0;i<nc->assignedAddressCount;++i) {
@@ -243,6 +229,29 @@ static void _networkToJson(nlohmann::json &nj,const ZT_VirtualNetworkConfig *nc,
 		ra.push_back(rj);
 	}
 	nj["routes"] = ra;
+
+	nlohmann::json mca = nlohmann::json::array();
+	for(unsigned int i=0;i<nc->multicastSubscriptionCount;++i) {
+		nlohmann::json m;
+		m["mac"] = MAC(nc->multicastSubscriptions[i].mac).toString(tmp);
+		m["adi"] = nc->multicastSubscriptions[i].adi;
+		mca.push_back(m);
+	}
+	nj["multicastSubscriptions"] = mca;
+
+	nlohmann::json m;
+	m["domain"] = nc->dns.domain;
+	m["servers"] = nlohmann::json::array();
+	for(int j=0;j<ZT_MAX_DNS_SERVERS;++j) {
+		
+		InetAddress a(nc->dns.server_addr[j]);
+		if (a.isV4() || a.isV6()) {
+			char buf[256];
+			m["servers"].push_back(a.toIpString(buf));
+		}
+	}
+	nj["dns"] = m;
+	
 }
 
 static void _peerToJson(nlohmann::json &pj,const ZT_Peer *peer)
@@ -265,6 +274,11 @@ static void _peerToJson(nlohmann::json &pj,const ZT_Peer *peer)
 	pj["version"] = tmp;
 	pj["latency"] = peer->latency;
 	pj["role"] = prole;
+	pj["isBonded"] = peer->isBonded;
+	pj["bondingPolicy"] = peer->bondingPolicy;
+	pj["isHealthy"] = peer->isHealthy;
+	pj["numAliveLinks"] = peer->numAliveLinks;
+	pj["numTotalLinks"] = peer->numTotalLinks;
 
 	nlohmann::json pa = nlohmann::json::array();
 	for(unsigned int i=0;i<peer->pathCount;++i) {
@@ -281,6 +295,45 @@ static void _peerToJson(nlohmann::json &pj,const ZT_Peer *peer)
 		pa.push_back(j);
 	}
 	pj["paths"] = pa;
+}
+
+static void _peerBondToJson(nlohmann::json &pj,const ZT_Peer *peer)
+{
+	char tmp[256];
+	OSUtils::ztsnprintf(tmp,sizeof(tmp),"%.10llx",peer->address);
+	//pj["aggregateLinkLatency"] = peer->latency;
+	std::string policyStr = BondController::getPolicyStrByCode(peer->bondingPolicy);
+	pj["policy"] = policyStr;
+
+	nlohmann::json pa = nlohmann::json::array();
+	for(unsigned int i=0;i<peer->pathCount;++i) {
+		int64_t lastSend = peer->paths[i].lastSend;
+		int64_t lastReceive = peer->paths[i].lastReceive;
+		nlohmann::json j;
+		j["ifname"] = std::string(peer->paths[i].ifname);
+		j["path"] = reinterpret_cast<const InetAddress *>(&(peer->paths[i].address))->toString(tmp);
+		j["lastTX"] = (lastSend < 0) ? 0 : lastSend;
+		j["lastRX"] = (lastReceive < 0) ? 0 : lastReceive;
+		j["lat"] = peer->paths[i].latencyMean;
+		j["pdv"] = peer->paths[i].latencyVariance;
+
+		//j["trustedPathId"] = peer->paths[i].trustedPathId;
+		//j["active"] = (bool)(peer->paths[i].expired == 0);
+		//j["expired"] = (bool)(peer->paths[i].expired != 0);
+		//j["preferred"] = (bool)(peer->paths[i].preferred != 0);
+		//j["ltm"] = peer->paths[i].latencyMax;
+		//j["plr"] = peer->paths[i].packetLossRatio;
+		//j["per"] = peer->paths[i].packetErrorRatio;
+		//j["thr"] = peer->paths[i].throughputMean;
+		//j["thm"] = peer->paths[i].throughputMax;
+		//j["thv"] = peer->paths[i].throughputVariance;
+		//j["avl"] = peer->paths[i].availability;
+		//j["age"] = peer->paths[i].age;
+		//j["alloc"] = peer->paths[i].allocation;
+		//j["ifname"] = peer->paths[i].ifname;
+		pa.push_back(j);
+	}
+	pj["links"] = pa;
 }
 
 static void _moonToJson(nlohmann::json &mj,const World &world)
@@ -384,6 +437,15 @@ struct TcpConnection
 	Mutex writeq_m;
 };
 
+struct OneServiceIncomingPacket
+{
+	uint64_t now;
+	int64_t sock;
+	struct sockaddr_storage from;
+	unsigned int size;
+	uint8_t data[ZT_MAX_MTU];
+};
+
 class OneServiceImpl : public OneService
 {
 public:
@@ -403,7 +465,11 @@ public:
 	PhySocket *_localControlSocket6;
 	bool _updateAutoApply;
 	bool _allowTcpFallbackRelay;
+	bool _allowSecondaryPort;
+
 	unsigned int _primaryPort;
+	unsigned int _secondaryPort;
+	unsigned int _tertiaryPort;
 	volatile unsigned int _udpPortPickerCounter;
 
 	// Local configuration and memo-ized information from it
@@ -418,11 +484,13 @@ public:
 	std::vector< std::string > _interfacePrefixBlacklist;
 	Mutex _localConfig_m;
 
+	std::vector<InetAddress> explicitBind;
+
 	/*
 	 * To attempt to handle NAT/gateway craziness we use three local UDP ports:
 	 *
 	 * [0] is the normal/default port, usually 9993
-	 * [1] is a port dervied from our ZeroTier address
+	 * [1] is a port derived from our ZeroTier address
 	 * [2] is a port computed from the normal/default for use with uPnP/NAT-PMP mappings
 	 *
 	 * [2] exists because on some gateways trying to do regular NAT-t interferes
@@ -454,9 +522,11 @@ public:
 			settings.allowManaged = true;
 			settings.allowGlobal = false;
 			settings.allowDefault = false;
+			settings.allowDNS = false;
+			memset(&config, 0, sizeof(ZT_VirtualNetworkConfig));
 		}
 
-		EthernetTap *tap;
+		std::shared_ptr<EthernetTap> tap;
 		ZT_VirtualNetworkConfig config; // memcpy() of raw config from core
 		std::vector<InetAddress> managedIps;
 		std::list< SharedPtr<ManagedRoute> > managedRoutes;
@@ -481,9 +551,19 @@ public:
 	PortMapper *_portMapper;
 #endif
 
+	// HashiCorp Vault Settings
+#if ZT_VAULT_SUPPORT
+	bool _vaultEnabled;
+	std::string _vaultURL;
+	std::string _vaultToken;
+	std::string _vaultPath; // defaults to cubbyhole/zerotier/identity.secret for per-access key storage
+#endif
+
 	// Set to false to force service to stop
 	volatile bool _run;
 	Mutex _run_m;
+
+	RedisConfig *_rc;
 
 	// end member variables ----------------------------------------------------
 
@@ -513,11 +593,22 @@ public:
 #ifdef ZT_USE_MINIUPNPC
 		,_portMapper((PortMapper *)0)
 #endif
+#ifdef ZT_VAULT_SUPPORT
+		,_vaultEnabled(false)
+		,_vaultURL()
+		,_vaultToken()
+		,_vaultPath("cubbyhole/zerotier")
+#endif
 		,_run(true)
+		,_rc(NULL)
 	{
 		_ports[0] = 0;
 		_ports[1] = 0;
 		_ports[2] = 0;
+
+#if ZT_VAULT_SUPPORT
+		curl_global_init(CURL_GLOBAL_DEFAULT);
+#endif
 	}
 
 	virtual ~OneServiceImpl()
@@ -525,10 +616,16 @@ public:
 		_binder.closeAll(_phy);
 		_phy.close(_localControlSocket4);
 		_phy.close(_localControlSocket6);
+
+#if ZT_VAULT_SUPPORT
+		curl_global_cleanup();
+#endif
+
 #ifdef ZT_USE_MINIUPNPC
 		delete _portMapper;
 #endif
 		delete _controller;
+		delete _rc;
 	}
 
 	virtual ReasonForTermination run()
@@ -568,98 +665,8 @@ public:
 				_node = new Node(this,(void *)0,&cb,OSUtils::now());
 			}
 
-			// Read local configuration
-			std::vector<InetAddress> explicitBind;
-			{
-				std::map<InetAddress,ZT_PhysicalPathConfiguration> ppc;
-
-				// LEGACY: support old "trustedpaths" flat file
-				FILE *trustpaths = fopen((_homePath + ZT_PATH_SEPARATOR_S "trustedpaths").c_str(),"r");
-				if (trustpaths) {
-					fprintf(stderr,"WARNING: 'trustedpaths' flat file format is deprecated in favor of path definitions in local.conf" ZT_EOL_S);
-					char buf[1024];
-					while (fgets(buf,sizeof(buf),trustpaths)) {
-						int fno = 0;
-						char *saveptr = (char *)0;
-						uint64_t trustedPathId = 0;
-						InetAddress trustedPathNetwork;
-						for(char *f=Utils::stok(buf,"=\r\n \t",&saveptr);(f);f=Utils::stok((char *)0,"=\r\n \t",&saveptr)) {
-							if (fno == 0) {
-								trustedPathId = Utils::hexStrToU64(f);
-							} else if (fno == 1) {
-								trustedPathNetwork = InetAddress(f);
-							} else break;
-							++fno;
-						}
-						if ( (trustedPathId != 0) && ((trustedPathNetwork.ss_family == AF_INET)||(trustedPathNetwork.ss_family == AF_INET6)) && (trustedPathNetwork.netmaskBits() > 0) ) {
-							ppc[trustedPathNetwork].trustedPathId = trustedPathId;
-							ppc[trustedPathNetwork].mtu = 0; // use default
-						}
-					}
-					fclose(trustpaths);
-				}
-
-				// Read local config file
-				Mutex::Lock _l2(_localConfig_m);
-				std::string lcbuf;
-				if (OSUtils::readFile((_homePath + ZT_PATH_SEPARATOR_S "local.conf").c_str(),lcbuf)) {
-					try {
-						_localConfig = OSUtils::jsonParse(lcbuf);
-						if (!_localConfig.is_object()) {
-							fprintf(stderr,"WARNING: unable to parse local.conf (root element is not a JSON object)" ZT_EOL_S);
-						}
-					} catch ( ... ) {
-						fprintf(stderr,"WARNING: unable to parse local.conf (invalid JSON)" ZT_EOL_S);
-					}
-				}
-
-				// Get any trusted paths in local.conf (we'll parse the rest of physical[] elsewhere)
-				json &physical = _localConfig["physical"];
-				if (physical.is_object()) {
-					for(json::iterator phy(physical.begin());phy!=physical.end();++phy) {
-						InetAddress net(OSUtils::jsonString(phy.key(),"").c_str());
-						if (net) {
-							if (phy.value().is_object()) {
-								uint64_t tpid;
-								if ((tpid = OSUtils::jsonInt(phy.value()["trustedPathId"],0ULL)) != 0ULL) {
-									if ((net.ss_family == AF_INET)||(net.ss_family == AF_INET6))
-										ppc[net].trustedPathId = tpid;
-								}
-								ppc[net].mtu = (int)OSUtils::jsonInt(phy.value()["mtu"],0ULL); // 0 means use default
-							}
-						}
-					}
-				}
-
-				json &settings = _localConfig["settings"];
-				if (settings.is_object()) {
-					// Allow controller DB path to be put somewhere else
-					const std::string cdbp(OSUtils::jsonString(settings["controllerDbPath"],""));
-					if (cdbp.length() > 0)
-						_controllerDbPath = cdbp;
-
-					// Bind to wildcard instead of to specific interfaces (disables full tunnel capability)
-					json &bind = settings["bind"];
-					if (bind.is_array()) {
-						for(unsigned long i=0;i<bind.size();++i) {
-							const std::string ips(OSUtils::jsonString(bind[i],""));
-							if (ips.length() > 0) {
-								InetAddress ip(ips.c_str());
-								if ((ip.ss_family == AF_INET)||(ip.ss_family == AF_INET6))
-									explicitBind.push_back(ip);
-							}
-						}
-					}
-				}
-
-				// Set trusted paths if there are any
-				if (ppc.size() > 0) {
-					for(std::map<InetAddress,ZT_PhysicalPathConfiguration>::iterator i(ppc.begin());i!=ppc.end();++i)
-						_node->setPhysicalPathConfiguration(reinterpret_cast<const struct sockaddr_storage *>(&(i->first)),&(i->second));
-				}
-			}
-
-			// Apply other runtime configuration from local.conf
+			// local.conf
+			readLocalSettings();
 			applyLocalConfig();
 
 			// Make sure we can use the primary port, and hunt for one if configured to do so
@@ -708,39 +715,48 @@ public:
 			// This exists because there are buggy NATs out there that fail if more
 			// than one device behind the same NAT tries to use the same internal
 			// private address port number. Buggy NATs are a running theme.
-			_ports[1] = 20000 + ((unsigned int)_node->address() % 45500);
-			for(int i=0;;++i) {
-				if (i > 1000) {
-					_ports[1] = 0;
-					break;
-				} else if (++_ports[1] >= 65536) {
-					_ports[1] = 20000;
+			if (_allowSecondaryPort) {
+				if (_secondaryPort) {
+					_ports[1] = _secondaryPort;
+				} else {
+					_ports[1] = 20000 + ((unsigned int)_node->address() % 45500);
+					for(int i=0;;++i) {
+						if (i > 1000) {
+							_ports[1] = 0;
+							break;
+						} else if (++_ports[1] >= 65536) {
+							_ports[1] = 20000;
+						}
+						if (_trialBind(_ports[1]))
+							break;
+					}
 				}
-				if (_trialBind(_ports[1]))
-					break;
 			}
-
 #ifdef ZT_USE_MINIUPNPC
 			if (_portMappingEnabled) {
 				// If we're running uPnP/NAT-PMP, bind a *third* port for that. We can't
 				// use the other two ports for that because some NATs do really funky
 				// stuff with ports that are explicitly mapped that breaks things.
 				if (_ports[1]) {
-					_ports[2] = _ports[1];
-					for(int i=0;;++i) {
-						if (i > 1000) {
-							_ports[2] = 0;
-							break;
-						} else if (++_ports[2] >= 65536) {
-							_ports[2] = 20000;
+					if (_tertiaryPort) {
+						_ports[2] = _tertiaryPort;
+					} else {
+						_ports[2] = _ports[1];
+						for(int i=0;;++i) {
+							if (i > 1000) {
+								_ports[2] = 0;
+								break;
+							} else if (++_ports[2] >= 65536) {
+								_ports[2] = 20000;
+							}
+							if (_trialBind(_ports[2]))
+								break;
 						}
-						if (_trialBind(_ports[2]))
-							break;
-					}
-					if (_ports[2]) {
-						char uniqueName[64];
-						OSUtils::ztsnprintf(uniqueName,sizeof(uniqueName),"ZeroTier/%.10llx@%u",_node->address(),_ports[2]);
-						_portMapper = new PortMapper(_ports[2],uniqueName);
+						if (_ports[2]) {
+							char uniqueName[64];
+							OSUtils::ztsnprintf(uniqueName,sizeof(uniqueName),"ZeroTier/%.10llx@%u",_node->address(),_ports[2]);
+							_portMapper = new PortMapper(_ports[2],uniqueName);
+						}
 					}
 				}
 			}
@@ -750,7 +766,7 @@ public:
 			OSUtils::rmDashRf((_homePath + ZT_PATH_SEPARATOR_S "iddb.d").c_str());
 
 			// Network controller is now enabled by default for desktop and server
-			_controller = new EmbeddedNetworkController(_node,_controllerDbPath.c_str());
+			_controller = new EmbeddedNetworkController(_node,_homePath.c_str(),_controllerDbPath.c_str(),_ports[0], _rc);
 			_node->setNetconfMaster((void *)_controller);
 
 			// Join existing networks in networks.d
@@ -782,6 +798,7 @@ public:
 			int64_t lastUpdateCheck = clockShouldBe;
 			int64_t lastCleanedPeersDb = 0;
 			int64_t lastLocalInterfaceAddressCheck = (clockShouldBe - ZT_LOCAL_INTERFACE_CHECK_INTERVAL) + 15000; // do this in 15s to give portmapper time to configure and other things time to settle
+			int64_t lastLocalConfFileCheck = OSUtils::now();
 			for(;;) {
 				_run_m.lock();
 				if (!_run) {
@@ -810,8 +827,21 @@ public:
 						_updater->apply();
 				}
 
+				// Reload local.conf if anything changed recently
+				if ((now - lastLocalConfFileCheck) >= ZT_LOCAL_CONF_FILE_CHECK_INTERVAL) {
+					lastLocalConfFileCheck = now;
+					struct stat result;
+					if(stat((_homePath + ZT_PATH_SEPARATOR_S "local.conf").c_str(), &result)==0) {
+						int64_t mod_time = result.st_mtime * 1000;
+						if ((now - mod_time) <= ZT_LOCAL_CONF_FILE_CHECK_INTERVAL) {
+							readLocalSettings();
+							applyLocalConfig();
+						}
+					}
+				}
+
 				// Refresh bindings in case device's interfaces have changed, and also sync routes to update any shadow routes (e.g. shadow default)
-				if (((now - lastBindRefresh) >= ZT_BINDER_REFRESH_PERIOD)||(restarted)) {
+				if (((now - lastBindRefresh) >= (_node->bondController()->inUse() ? ZT_BINDER_REFRESH_PERIOD / 4 : ZT_BINDER_REFRESH_PERIOD))||(restarted)) {
 					lastBindRefresh = now;
 					unsigned int p[3];
 					unsigned int pc = 0;
@@ -824,7 +854,7 @@ public:
 						Mutex::Lock _l(_nets_m);
 						for(std::map<uint64_t,NetworkState>::iterator n(_nets.begin());n!=_nets.end();++n) {
 							if (n->second.tap)
-								syncManagedStuff(n->second,false,true);
+								syncManagedStuff(n->second,false,true,false);
 						}
 					}
 				}
@@ -863,7 +893,7 @@ public:
 				}
 
 				// Sync information about physical network interfaces
-				if ((now - lastLocalInterfaceAddressCheck) >= ZT_LOCAL_INTERFACE_CHECK_INTERVAL) {
+				if ((now - lastLocalInterfaceAddressCheck) >= (_node->bondController()->inUse() ? ZT_LOCAL_INTERFACE_CHECK_INTERVAL / 8 : ZT_LOCAL_INTERFACE_CHECK_INTERVAL)) {
 					lastLocalInterfaceAddressCheck = now;
 
 					_node->clearLocalInterfaceAddresses();
@@ -877,8 +907,9 @@ public:
 #endif
 
 					std::vector<InetAddress> boundAddrs(_binder.allBoundLocalInterfaceAddresses());
-					for(std::vector<InetAddress>::const_iterator i(boundAddrs.begin());i!=boundAddrs.end();++i)
+					for(std::vector<InetAddress>::const_iterator i(boundAddrs.begin());i!=boundAddrs.end();++i) {
 						_node->addLocalInterfaceAddress(reinterpret_cast<const struct sockaddr_storage *>(&(*i)));
+					}
 				}
 
 				// Clean peers.d periodically
@@ -909,8 +940,6 @@ public:
 
 		{
 			Mutex::Lock _l(_nets_m);
-			for(std::map<uint64_t,NetworkState>::iterator n(_nets.begin());n!=_nets.end();++n)
-				delete n->second.tap;
 			_nets.clear();
 		}
 
@@ -920,6 +949,113 @@ public:
 		_node = (Node *)0;
 
 		return _termReason;
+	}
+
+	void readLocalSettings()
+	{
+		// Read local configuration
+		std::map<InetAddress,ZT_PhysicalPathConfiguration> ppc;
+
+		// LEGACY: support old "trustedpaths" flat file
+		FILE *trustpaths = fopen((_homePath + ZT_PATH_SEPARATOR_S "trustedpaths").c_str(),"r");
+		if (trustpaths) {
+			fprintf(stderr,"WARNING: 'trustedpaths' flat file format is deprecated in favor of path definitions in local.conf" ZT_EOL_S);
+			char buf[1024];
+			while (fgets(buf,sizeof(buf),trustpaths)) {
+				int fno = 0;
+				char *saveptr = (char *)0;
+				uint64_t trustedPathId = 0;
+				InetAddress trustedPathNetwork;
+				for(char *f=Utils::stok(buf,"=\r\n \t",&saveptr);(f);f=Utils::stok((char *)0,"=\r\n \t",&saveptr)) {
+					if (fno == 0) {
+						trustedPathId = Utils::hexStrToU64(f);
+					} else if (fno == 1) {
+						trustedPathNetwork = InetAddress(f);
+					} else break;
+					++fno;
+				}
+				if ( (trustedPathId != 0) && ((trustedPathNetwork.ss_family == AF_INET)||(trustedPathNetwork.ss_family == AF_INET6)) && (trustedPathNetwork.netmaskBits() > 0) ) {
+					ppc[trustedPathNetwork].trustedPathId = trustedPathId;
+					ppc[trustedPathNetwork].mtu = 0; // use default
+				}
+			}
+			fclose(trustpaths);
+		}
+
+		// Read local config file
+		Mutex::Lock _l2(_localConfig_m);
+		std::string lcbuf;
+		if (OSUtils::readFile((_homePath + ZT_PATH_SEPARATOR_S "local.conf").c_str(),lcbuf)) {
+			if (lcbuf.length() > 0) {
+				try {
+					_localConfig = OSUtils::jsonParse(lcbuf);
+					if (!_localConfig.is_object()) {
+						fprintf(stderr,"ERROR: unable to parse local.conf (root element is not a JSON object)" ZT_EOL_S);
+						exit(1);
+					}
+				} catch ( ... ) {
+					fprintf(stderr,"ERROR: unable to parse local.conf (invalid JSON)" ZT_EOL_S);
+					exit(1);
+				}
+			}
+		}
+
+		// Get any trusted paths in local.conf (we'll parse the rest of physical[] elsewhere)
+		json &physical = _localConfig["physical"];
+		if (physical.is_object()) {
+			for(json::iterator phy(physical.begin());phy!=physical.end();++phy) {
+				InetAddress net(OSUtils::jsonString(phy.key(),"").c_str());
+				if (net) {
+					if (phy.value().is_object()) {
+						uint64_t tpid;
+						if ((tpid = OSUtils::jsonInt(phy.value()["trustedPathId"],0ULL)) != 0ULL) {
+							if ((net.ss_family == AF_INET)||(net.ss_family == AF_INET6))
+								ppc[net].trustedPathId = tpid;
+						}
+						ppc[net].mtu = (int)OSUtils::jsonInt(phy.value()["mtu"],0ULL); // 0 means use default
+					}
+				}
+			}
+		}
+
+		json &settings = _localConfig["settings"];
+		if (settings.is_object()) {
+			// Allow controller DB path to be put somewhere else
+			const std::string cdbp(OSUtils::jsonString(settings["controllerDbPath"],""));
+			if (cdbp.length() > 0)
+				_controllerDbPath = cdbp;
+
+#ifdef ZT_CONTROLLER_USE_LIBPQ
+			// TODO:  Redis config
+			json &redis = settings["redis"];
+			if (redis.is_object() && _rc == NULL) {
+				_rc = new RedisConfig;
+				_rc->hostname = OSUtils::jsonString(redis["hostname"],"");
+				_rc->port = redis["port"];
+				_rc->password = OSUtils::jsonString(redis["password"],"");
+				_rc->clusterMode = OSUtils::jsonBool(redis["clusterMode"], false);
+			}
+#endif
+
+			// Bind to wildcard instead of to specific interfaces (disables full tunnel capability)
+			json &bind = settings["bind"];
+			if (bind.is_array()) {
+				for(unsigned long i=0;i<bind.size();++i) {
+					const std::string ips(OSUtils::jsonString(bind[i],""));
+					if (ips.length() > 0) {
+						InetAddress ip(ips.c_str());
+						if ((ip.ss_family == AF_INET)||(ip.ss_family == AF_INET6))
+							explicitBind.push_back(ip);
+					}
+				}
+			}
+		}
+
+		// Set trusted paths if there are any
+		if (ppc.size() > 0) {
+			for(std::map<InetAddress,ZT_PhysicalPathConfiguration>::iterator i(ppc.begin());i!=ppc.end();++i)
+				_node->setPhysicalPathConfiguration(reinterpret_cast<const struct sockaddr_storage *>(&(i->first)),&(i->second));
+		}
 	}
 
 	virtual ReasonForTermination reasonForTermination() const
@@ -944,43 +1080,25 @@ public:
 	}
 
 #ifdef ZT_SDK
-	virtual void leave(const uint64_t hp)
-	{
-		_node->leave(hp, NULL, NULL);
-	}
-
-	virtual void join(const uint64_t hp)
-	{
-		_node->join(hp, NULL, NULL);
-	}
-
 	virtual std::string givenHomePath()
 	{
 		return _homePath;
 	}
 
-	std::vector<ZT_VirtualNetworkRoute> *getRoutes(uint64_t nwid)
+	void getRoutes(uint64_t nwid, void *routeArray, unsigned int *numRoutes)
 	{
 		Mutex::Lock _l(_nets_m);
 		NetworkState &n = _nets[nwid];
-		std::vector<ZT_VirtualNetworkRoute> *routes = new std::vector<ZT_VirtualNetworkRoute>();
-		for(int i=0; i<ZT_MAX_NETWORK_ROUTES; i++) {
-			routes->push_back(n.config.routes[i]);
+		*numRoutes = *numRoutes < n.config.routeCount ? *numRoutes : n.config.routeCount;
+		for(unsigned int i=0; i<*numRoutes; i++) {
+			ZT_VirtualNetworkRoute *vnr = (ZT_VirtualNetworkRoute*)routeArray;
+			memcpy(&vnr[i], &(n.config.routes[i]), sizeof(ZT_VirtualNetworkRoute));
 		}
-		return routes;
 	}
 
 	virtual Node *getNode()
 	{
 		return _node;
-	}
-
-	virtual void removeNets()
-	{
-		Mutex::Lock _l(_nets_m);
-		std::map<uint64_t,NetworkState>::iterator i;
-		for(i = _nets.begin(); i != _nets.end(); i++)
-			delete i->second.tap;
 	}
 #endif // ZT_SDK
 
@@ -1018,11 +1136,12 @@ public:
 			fprintf(out,"allowManaged=%d\n",(int)n->second.settings.allowManaged);
 			fprintf(out,"allowGlobal=%d\n",(int)n->second.settings.allowGlobal);
 			fprintf(out,"allowDefault=%d\n",(int)n->second.settings.allowDefault);
+			fprintf(out,"allowDNS=%d\n",(int)n->second.settings.allowDNS);
 			fclose(out);
 		}
 
 		if (n->second.tap)
-			syncManagedStuff(n->second,true,true);
+			syncManagedStuff(n->second,true,true,true);
 
 		return true;
 	}
@@ -1082,16 +1201,6 @@ public:
 #ifdef __SYNOLOGY__
 		// Authenticate via Synology's built-in cgi script
 		if (!isAuth) {
-			/*
-			fprintf(stderr, "path = %s\n", path.c_str());
-			fprintf(stderr, "headers.size=%d\n", headers.size());
-			std::map<std::string, std::string>::const_iterator it(headers.begin());
-			while(it != headers.end()) {
-				fprintf(stderr,"header[%s] = %s\n", (it->first).c_str(), (it->second).c_str());
-				it++;
-			}
-			*/
-			// parse out url args
 			int synotoken_pos = path.find("SynoToken");
 			int argpos = path.find("?");
 			if(synotoken_pos != std::string::npos && argpos != std::string::npos) {
@@ -1104,10 +1213,6 @@ public:
 				setenv("HTTP_COOKIE", cookie_val.c_str(), true);
 				setenv("HTTP_X_SYNO_TOKEN", synotoken_val.c_str(), true);
 				setenv("REMOTE_ADDR", ah2->second.c_str(),true);
-					//fprintf(stderr, "HTTP_COOKIE: %s\n",std::getenv ("HTTP_COOKIE"));
-					//fprintf(stderr, "HTTP_X_SYNO_TOKEN: %s\n",std::getenv ("HTTP_X_SYNO_TOKEN"));
-					//fprintf(stderr, "REMOTE_ADDR: %s\n",std::getenv ("REMOTE_ADDR"));
-				// check synology web auth
 				char user[256], buf[1024];
 				FILE *fp = NULL;
 				bzero(user, 256);
@@ -1153,6 +1258,23 @@ public:
 					json &settings = res["config"]["settings"];
 					settings["primaryPort"] = OSUtils::jsonInt(settings["primaryPort"],(uint64_t)_primaryPort) & 0xffff;
 					settings["allowTcpFallbackRelay"] = OSUtils::jsonBool(settings["allowTcpFallbackRelay"],_allowTcpFallbackRelay);
+
+					if (_node->bondController()->inUse()) {
+						json &multipathConfig = res["bonds"];
+						ZT_PeerList *pl = _node->peers();
+						char peerAddrStr[256];
+						if (pl) {
+							for(unsigned long i=0;i<pl->peerCount;++i) {
+								if (pl->peers[i].isBonded) {
+									nlohmann::json pj;
+									_peerBondToJson(pj,&(pl->peers[i]));
+									OSUtils::ztsnprintf(peerAddrStr,sizeof(peerAddrStr),"%.10llx",pl->peers[i].address);
+									multipathConfig[peerAddrStr] = (pj);
+								}
+							}
+						}
+					}
+
 #ifdef ZT_USE_MINIUPNPC
 					settings["portMappingEnabled"] = OSUtils::jsonBool(settings["portMappingEnabled"],true);
 #else
@@ -1255,6 +1377,35 @@ public:
 						} else scode = 404;
 						_node->freeQueryResult((void *)pl);
 					} else scode = 500;
+				} else if (ps[0] == "bonds") {
+					ZT_PeerList *pl = _node->peers();
+					if (pl) {
+						if (ps.size() == 1) {
+							// Return [array] of all peers
+
+							res = nlohmann::json::array();
+							for(unsigned long i=0;i<pl->peerCount;++i) {
+								nlohmann::json pj;
+								_peerToJson(pj,&(pl->peers[i]));
+								res.push_back(pj);
+							}
+
+							scode = 200;
+						} else if (ps.size() == 2) {
+							// Return a single peer by ID or 404 if not found
+
+							uint64_t wantp = Utils::hexStrToU64(ps[1].c_str());
+							for(unsigned long i=0;i<pl->peerCount;++i) {
+								if (pl->peers[i].address == wantp) {
+									_peerToJson(res,&(pl->peers[i]));
+									scode = 200;
+									break;
+								}
+							}
+
+						} else scode = 404;
+						_node->freeQueryResult((void *)pl);
+					} else scode = 500;
 				} else {
 					if (_controller) {
 						scode = _controller->handleControlPlaneHttpGET(std::vector<std::string>(ps.begin()+1,ps.end()),urlArgs,headers,body,responseBody,responseContentType);
@@ -1323,6 +1474,8 @@ public:
 											if (allowGlobal.is_boolean()) localSettings.allowGlobal = (bool)allowGlobal;
 											json &allowDefault = j["allowDefault"];
 											if (allowDefault.is_boolean()) localSettings.allowDefault = (bool)allowDefault;
+											json &allowDNS = j["allowDNS"];
+											if (allowDNS.is_boolean()) localSettings.allowDNS = (bool)allowDNS;
 										}
 									} catch ( ... ) {
 										// discard invalid JSON
@@ -1479,8 +1632,148 @@ public:
 
 		json &settings = lc["settings"];
 
+		if (!_node->bondController()->inUse()) {
+			// defaultBondingPolicy
+			std::string defaultBondingPolicyStr(OSUtils::jsonString(settings["defaultBondingPolicy"],""));
+			int defaultBondingPolicy = _node->bondController()->getPolicyCodeByStr(defaultBondingPolicyStr);
+			_node->bondController()->setBondingLayerDefaultPolicy(defaultBondingPolicy);
+			_node->bondController()->setBondingLayerDefaultPolicyStr(defaultBondingPolicyStr); // Used if custom policy
+			// Custom Policies
+			json &customBondingPolicies = settings["policies"];
+			for (json::iterator policyItr = customBondingPolicies.begin(); policyItr != customBondingPolicies.end();++policyItr) {
+				// Custom Policy
+				std::string customPolicyStr(policyItr.key());
+				json &customPolicy = policyItr.value();
+				std::string basePolicyStr(OSUtils::jsonString(customPolicy["basePolicy"],""));
+				if (_node->bondController()->getPolicyCodeByStr(basePolicyStr) == ZT_BONDING_POLICY_NONE) {
+					fprintf(stderr, "error: custom policy (%s) is invalid, unknown base policy (%s).\n",
+						customPolicyStr.c_str(), basePolicyStr.c_str());
+					continue;
+				} if (_node->bondController()->getPolicyCodeByStr(customPolicyStr) != ZT_BONDING_POLICY_NONE) {
+					fprintf(stderr, "error: custom policy (%s) will be ignored, cannot use standard policy names for custom policies.\n",
+						customPolicyStr.c_str());
+					continue;
+				}
+				// New bond, used as a copy template for new instances
+				SharedPtr<Bond> newTemplateBond = new Bond(NULL, basePolicyStr, customPolicyStr, SharedPtr<Peer>());
+				// Acceptable ranges
+				newTemplateBond->setMaxAcceptableLatency(OSUtils::jsonInt(customPolicy["maxAcceptableLatency"],-1));
+				newTemplateBond->setMaxAcceptableMeanLatency(OSUtils::jsonInt(customPolicy["maxAcceptableMeanLatency"],-1));
+				newTemplateBond->setMaxAcceptablePacketDelayVariance(OSUtils::jsonInt(customPolicy["maxAcceptablePacketDelayVariance"],-1));
+				newTemplateBond->setMaxAcceptablePacketLossRatio((float)OSUtils::jsonDouble(customPolicy["maxAcceptablePacketLossRatio"],-1));
+				newTemplateBond->setMaxAcceptablePacketErrorRatio((float)OSUtils::jsonDouble(customPolicy["maxAcceptablePacketErrorRatio"],-1));
+				newTemplateBond->setMinAcceptableAllocation((float)OSUtils::jsonDouble(customPolicy["minAcceptableAllocation"],0));
+				// Quality weights
+				json &qualityWeights = customPolicy["qualityWeights"];
+				if (qualityWeights.size() == ZT_QOS_WEIGHT_SIZE) { // TODO: Generalize this
+					float weights[ZT_QOS_WEIGHT_SIZE];
+					weights[ZT_QOS_LAT_IDX] = (float)OSUtils::jsonDouble(qualityWeights["lat"],0.0);
+					weights[ZT_QOS_LTM_IDX] = (float)OSUtils::jsonDouble(qualityWeights["ltm"],0.0);
+					weights[ZT_QOS_PDV_IDX] = (float)OSUtils::jsonDouble(qualityWeights["pdv"],0.0);
+					weights[ZT_QOS_PLR_IDX] = (float)OSUtils::jsonDouble(qualityWeights["plr"],0.0);
+					weights[ZT_QOS_PER_IDX] = (float)OSUtils::jsonDouble(qualityWeights["per"],0.0);
+					weights[ZT_QOS_THR_IDX] = (float)OSUtils::jsonDouble(qualityWeights["thr"],0.0);
+					weights[ZT_QOS_THM_IDX] = (float)OSUtils::jsonDouble(qualityWeights["thm"],0.0);
+					weights[ZT_QOS_THV_IDX] = (float)OSUtils::jsonDouble(qualityWeights["thv"],0.0);
+					newTemplateBond->setUserQualityWeights(weights,ZT_QOS_WEIGHT_SIZE);
+				}
+				// Bond-specific properties
+				newTemplateBond->setUpDelay(OSUtils::jsonInt(customPolicy["upDelay"],-1));
+				newTemplateBond->setDownDelay(OSUtils::jsonInt(customPolicy["downDelay"],-1));
+				newTemplateBond->setFlowRebalanceStrategy(OSUtils::jsonInt(customPolicy["flowRebalanceStrategy"],(uint64_t)0));
+				newTemplateBond->setFailoverInterval(OSUtils::jsonInt(customPolicy["failoverInterval"],(uint64_t)0));
+				newTemplateBond->setPacketsPerLink(OSUtils::jsonInt(customPolicy["packetsPerLink"],-1));
+
+				std::string linkMonitorStrategyStr(OSUtils::jsonString(customPolicy["linkMonitorStrategy"],""));
+				uint8_t linkMonitorStrategy = ZT_MULTIPATH_SLAVE_MONITOR_STRATEGY_DEFAULT;
+				if (linkMonitorStrategyStr == "passive") { linkMonitorStrategy = ZT_MULTIPATH_SLAVE_MONITOR_STRATEGY_PASSIVE; }
+				if (linkMonitorStrategyStr == "active") { linkMonitorStrategy = ZT_MULTIPATH_SLAVE_MONITOR_STRATEGY_ACTIVE; }
+				if (linkMonitorStrategyStr == "dynamic") { linkMonitorStrategy = ZT_MULTIPATH_SLAVE_MONITOR_STRATEGY_DYNAMIC; }
+				newTemplateBond->setLinkMonitorStrategy(linkMonitorStrategy);
+
+				// Policy-Specific link set
+				json &links = customPolicy["links"];
+				for (json::iterator linkItr = links.begin(); linkItr != links.end();++linkItr) {
+					std::string linkNameStr(linkItr.key());
+					json &link = linkItr.value();
+
+					bool enabled = OSUtils::jsonInt(link["enabled"],true);
+					uint32_t speed = OSUtils::jsonInt(link["speed"],0);
+					float alloc = (float)OSUtils::jsonDouble(link["alloc"],0);
+
+					if (speed && alloc) {
+						fprintf(stderr, "error: cannot specify both speed (%d) and alloc (%f) for link (%s), pick one, link disabled.\n",
+							speed, alloc, linkNameStr.c_str());
+						enabled = false;
+					}
+					uint32_t upDelay = OSUtils::jsonInt(link["upDelay"],-1);
+					uint32_t downDelay = OSUtils::jsonInt(link["downDelay"],-1);
+					uint8_t ipvPref = OSUtils::jsonInt(link["ipvPref"],0);
+					uint32_t linkMonitorInterval = OSUtils::jsonInt(link["monitorInterval"],(uint64_t)0);
+					std::string failoverToStr(OSUtils::jsonString(link["failoverTo"],""));
+					// Mode
+					std::string linkModeStr(OSUtils::jsonString(link["mode"],"spare"));
+					uint8_t linkMode = ZT_MULTIPATH_SLAVE_MODE_SPARE;
+					if (linkModeStr == "primary") { linkMode = ZT_MULTIPATH_SLAVE_MODE_PRIMARY; }
+					if (linkModeStr == "spare") { linkMode = ZT_MULTIPATH_SLAVE_MODE_SPARE; }
+					// ipvPref
+					if ((ipvPref != 0) && (ipvPref != 4) && (ipvPref != 6) && (ipvPref != 46) && (ipvPref != 64)) {
+						fprintf(stderr, "error: invalid ipvPref value (%d), link disabled.\n", ipvPref);
+						enabled = false;
+					}
+					if (linkMode == ZT_MULTIPATH_SLAVE_MODE_SPARE && failoverToStr.length()) {
+						fprintf(stderr, "error: cannot specify failover links for spares, link disabled.\n");
+						failoverToStr = "";
+						enabled = false;
+					}
+					_node->bondController()->addCustomLink(customPolicyStr, new Link(linkNameStr,ipvPref,speed,linkMonitorInterval,upDelay,downDelay,enabled,linkMode,failoverToStr,alloc));
+				}
+				std::string linkSelectMethodStr(OSUtils::jsonString(customPolicy["activeReselect"],"optimize"));
+				if (linkSelectMethodStr == "always") {
+					newTemplateBond->setLinkSelectMethod(ZT_MULTIPATH_RESELECTION_POLICY_ALWAYS);
+				}
+				if (linkSelectMethodStr == "better") {
+					newTemplateBond->setLinkSelectMethod(ZT_MULTIPATH_RESELECTION_POLICY_BETTER);
+				}
+				if (linkSelectMethodStr == "failure") {
+					newTemplateBond->setLinkSelectMethod(ZT_MULTIPATH_RESELECTION_POLICY_FAILURE);
+				}
+				if (linkSelectMethodStr == "optimize") {
+					newTemplateBond->setLinkSelectMethod(ZT_MULTIPATH_RESELECTION_POLICY_OPTIMIZE);
+				}
+				if (newTemplateBond->getLinkSelectMethod() < 0 || newTemplateBond->getLinkSelectMethod() > 3) {
+					fprintf(stderr, "warning: invalid value (%s) for linkSelectMethod, assuming mode: always\n", linkSelectMethodStr.c_str());
+				}
+				/*
+				newBond->setPolicy(_node->bondController()->getPolicyCodeByStr(basePolicyStr));
+				newBond->setFlowHashing((bool)OSUtils::jsonInt(userSpecifiedBondingPolicies[i]["allowFlowHashing"],(bool)allowFlowHashing));
+				newBond->setBondMonitorInterval((unsigned int)OSUtils::jsonInt(userSpecifiedBondingPolicies[i]["monitorInterval"],(uint64_t)0));
+				newBond->setAllowPathNegotiation((bool)OSUtils::jsonInt(userSpecifiedBondingPolicies[i]["allowPathNegotiation"],(bool)false));
+				*/
+				if (!_node->bondController()->addCustomPolicy(newTemplateBond)) {
+					fprintf(stderr, "error: a custom policy of this name (%s) already exists.\n", customPolicyStr.c_str());
+				}
+			}
+			// Peer-specific bonding
+			json &peerSpecificBonds = settings["peerSpecificBonds"];
+			for (json::iterator peerItr = peerSpecificBonds.begin(); peerItr != peerSpecificBonds.end();++peerItr) {
+				_node->bondController()->assignBondingPolicyToPeer(std::stoull(peerItr.key(),0,16), peerItr.value());
+			}
+			// Check settings
+			if (defaultBondingPolicyStr.length() && !defaultBondingPolicy && !_node->bondController()->inUse()) {
+				fprintf(stderr, "error: unknown policy (%s) specified by defaultBondingPolicy, link disabled.\n", defaultBondingPolicyStr.c_str());
+			}
+		}
+
+		// bondingPolicy cannot be used with allowTcpFallbackRelay
+		_allowTcpFallbackRelay = OSUtils::jsonBool(settings["allowTcpFallbackRelay"],true) && !(_node->bondController()->inUse());
 		_primaryPort = (unsigned int)OSUtils::jsonInt(settings["primaryPort"],(uint64_t)_primaryPort) & 0xffff;
-		_allowTcpFallbackRelay = OSUtils::jsonBool(settings["allowTcpFallbackRelay"],true);
+		_allowSecondaryPort = OSUtils::jsonBool(settings["allowSecondaryPort"],true);
+		_secondaryPort = (unsigned int)OSUtils::jsonInt(settings["secondaryPort"],0);
+		_tertiaryPort = (unsigned int)OSUtils::jsonInt(settings["tertiaryPort"],0);
+		if (_secondaryPort != 0 || _tertiaryPort != 0) {
+			fprintf(stderr,"WARNING: using manually-specified ports. This can cause NAT issues." ZT_EOL_S);
+		}
 		_portMappingEnabled = OSUtils::jsonBool(settings["portMappingEnabled"],true);
 
 #ifndef ZT_SDK
@@ -1517,6 +1810,47 @@ public:
 			}
 		}
 	}
+
+#if ZT_VAULT_SUPPORT
+		json &vault = settings["vault"];
+		if (vault.is_object()) {
+			const std::string url(OSUtils::jsonString(vault["vaultURL"], "").c_str());
+			if (!url.empty()) {
+				_vaultURL = url;
+			}
+
+			const std::string token(OSUtils::jsonString(vault["vaultToken"], "").c_str());
+			if (!token.empty()) {
+				_vaultToken = token;
+			}
+
+			const std::string path(OSUtils::jsonString(vault["vaultPath"], "").c_str());
+			if (!path.empty()) {
+				_vaultPath = path;
+			}
+		}
+
+		// also check environment variables for values.  Environment variables
+		// will override local.conf variables
+		const std::string envURL(getenv("VAULT_ADDR"));
+		if (!envURL.empty()) {
+			_vaultURL = envURL;
+		}
+
+		const std::string envToken(getenv("VAULT_TOKEN"));
+		if (!envToken.empty()) {
+			_vaultToken = envToken;
+		}
+
+		const std::string envPath(getenv("VAULT_PATH"));
+		if (!envPath.empty()) {
+			_vaultPath = envPath;
+		}
+
+		if (!_vaultURL.empty() && !_vaultToken.empty()) {
+			_vaultEnabled = true;
+		}
+#endif
 
 	// Checks if a managed IP or route target is allowed
 	bool checkIfManagedIsAllowed(const NetworkState &n,const InetAddress &target)
@@ -1561,7 +1895,7 @@ public:
 	}
 
 	// Apply or update managed IPs for a configured network (be sure n.tap exists)
-	void syncManagedStuff(NetworkState &n,bool syncIps,bool syncRoutes)
+	void syncManagedStuff(NetworkState &n,bool syncIps,bool syncRoutes, bool syncDns)
 	{
 		char ipbuf[64];
 
@@ -1600,7 +1934,7 @@ public:
 		if (syncRoutes) {
 			char tapdev[64];
 #if defined(__WINDOWS__) && !defined(ZT_SDK)
-			OSUtils::ztsnprintf(tapdev,sizeof(tapdev),"%.16llx",(unsigned long long)n.tap->luid().Value);
+			OSUtils::ztsnprintf(tapdev,sizeof(tapdev),"%.16llx",(unsigned long long)((WindowsEthernetTap *)(n.tap.get()))->luid().Value);
 #else
 			Utils::scopy(tapdev,sizeof(tapdev),n.tap->deviceName().c_str());
 #endif
@@ -1632,21 +1966,37 @@ public:
 				const InetAddress *const target = reinterpret_cast<const InetAddress *>(&(n.config.routes[i].target));
 				const InetAddress *const via = reinterpret_cast<const InetAddress *>(&(n.config.routes[i].via));
 
+				const InetAddress *src = NULL;
+				for (unsigned int j=0; j<n.config.assignedAddressCount; ++j) {
+					const InetAddress *const tmp = reinterpret_cast<const InetAddress *>(&(n.config.assignedAddresses[j]));
+					if (target->isV4() && tmp->isV4()) {
+						src = reinterpret_cast<InetAddress *>(&(n.config.assignedAddresses[j]));
+						break;
+					} else if (target->isV6() && tmp->isV6()) {
+						src = reinterpret_cast<InetAddress *>(&(n.config.assignedAddresses[j]));
+						break;
+					}
+				}
+				if (!src)
+					src = &NULL_INET_ADDR;
+
 				if ( (!checkIfManagedIsAllowed(n,*target)) || ((via->ss_family == target->ss_family)&&(matchIpOnly(myIps,*via))) )
 					continue;
 
 				bool haveRoute = false;
 
 				// Ignore routes implied by local managed IPs since adding the IP adds the route
+#ifndef __APPLE__
 				for(std::vector<InetAddress>::iterator ip(n.managedIps.begin());ip!=n.managedIps.end();++ip) {
 					if ((target->netmaskBits() == ip->netmaskBits())&&(target->containsAddress(*ip))) {
 						haveRoute = true;
 						break;
 					}
 				}
+#endif
 				if (haveRoute)
 					continue;
-
+#ifndef ZT_SDK
 				// If we've already applied this route, just sync it and continue
 				for(std::list< SharedPtr<ManagedRoute> >::iterator mr(n.managedRoutes.begin());mr!=n.managedRoutes.end();++mr) {
 					if ( ((*mr)->target() == *target) && ( ((via->ss_family == target->ss_family)&&((*mr)->via().ipsEqual(*via))) || (tapdev == (*mr)->device()) ) ) {
@@ -1659,10 +2009,33 @@ public:
 					continue;
 
 				// Add and apply new routes
-				n.managedRoutes.push_back(SharedPtr<ManagedRoute>(new ManagedRoute(*target,*via,tapdev)));
+				n.managedRoutes.push_back(SharedPtr<ManagedRoute>(new ManagedRoute(*target,*via,*src,tapdev)));
 				if (!n.managedRoutes.back()->sync())
 					n.managedRoutes.pop_back();
+#endif
 			}
+		}
+
+		if (syncDns) {
+			if (n.settings.allowDNS) {
+				if (strlen(n.config.dns.domain) != 0) {
+					std::vector<InetAddress> servers;
+					for (int j = 0; j < ZT_MAX_DNS_SERVERS; ++j) {
+						InetAddress a(n.config.dns.server_addr[j]);
+						if (a.isV4() || a.isV6()) {
+							servers.push_back(a);
+						}
+					}
+					n.tap->setDns(n.config.dns.domain, servers);
+				}
+			} else {
+#ifdef __APPLE__
+				MacDNSHelper::removeDNS(n.config.nwid);
+#elif defined(__WINDOWS__)
+				WinDNSHelper::removeDNS(n.config.nwid);
+#endif
+			}
+
 		}
 	}
 
@@ -1672,16 +2045,10 @@ public:
 
 	inline void phyOnDatagram(PhySocket *sock,void **uptr,const struct sockaddr *localAddr,const struct sockaddr *from,void *data,unsigned long len)
 	{
+		const uint64_t now = OSUtils::now();
 		if ((len >= 16)&&(reinterpret_cast<const InetAddress *>(from)->ipScope() == InetAddress::IP_SCOPE_GLOBAL))
-			_lastDirectReceiveFromGlobal = OSUtils::now();
-		const ZT_ResultCode rc = _node->processWirePacket(
-			(void *)0,
-			OSUtils::now(),
-			reinterpret_cast<int64_t>(sock),
-			reinterpret_cast<const struct sockaddr_storage *>(from), // Phy<> uses sockaddr_storage, so it'll always be that big
-			data,
-			len,
-			&_nextBackgroundTaskDeadline);
+			_lastDirectReceiveFromGlobal = now;
+		const ZT_ResultCode rc = _node->processWirePacket(nullptr,now,reinterpret_cast<int64_t>(sock),reinterpret_cast<const struct sockaddr_storage *>(from),data,len,&_nextBackgroundTaskDeadline);
 		if (ZT_ResultCode_isFatal(rc)) {
 			char tmp[256];
 			OSUtils::ztsnprintf(tmp,sizeof(tmp),"fatal error code from processWirePacket: %d",(int)rc);
@@ -1722,6 +2089,13 @@ public:
 			_phy.close(sockN,false);
 			return;
 		} else {
+#ifdef ZT_SDK
+			// Immediately close new local connections. The intention is to prevent the backplane from being accessed when operating as libzt
+			if (!allowHttpBackplaneManagement && ((InetAddress*)from)->ipScope() == InetAddress::IP_SCOPE_LOOPBACK) {
+				_phy.close(sockN,false);
+				return;
+			}
+#endif
 			TcpConnection *tc = new TcpConnection();
 			{
 				Mutex::Lock _l(_tcpConnections_m);
@@ -1921,7 +2295,7 @@ public:
 	inline void phyOnUnixAccept(PhySocket *sockL,PhySocket *sockN,void **uptrL,void **uptrN) {}
 	inline void phyOnUnixClose(PhySocket *sock,void **uptr) {}
 	inline void phyOnUnixData(PhySocket *sock,void **uptr,void *data,unsigned long len) {}
-	inline void phyOnUnixWritable(PhySocket *sock,void **uptr,bool lwip_invoked) {}
+	inline void phyOnUnixWritable(PhySocket *sock,void **uptr) {}
 
 	inline int nodeVirtualNetworkConfigFunction(uint64_t nwid,void **nuptr,enum ZT_VirtualNetworkConfigOperation op,const ZT_VirtualNetworkConfig *nwc)
 	{
@@ -1936,7 +2310,8 @@ public:
 						char friendlyName[128];
 						OSUtils::ztsnprintf(friendlyName,sizeof(friendlyName),"ZeroTier One [%.16llx]",nwid);
 
-						n.tap = new EthernetTap(
+						n.tap = EthernetTap::newInstance(
+							nullptr,
 							_homePath.c_str(),
 							MAC(nwc->mac),
 							nwc->mtu,
@@ -1979,6 +2354,7 @@ public:
 							}
 							n.settings.allowGlobal = nc.getB("allowGlobal", false);
 							n.settings.allowDefault = nc.getB("allowDefault", false);
+							n.settings.allowDNS = nc.getB("allowDNS", false);
 						}
 					} catch (std::exception &exc) {
 #ifdef __WINDOWS__
@@ -1999,7 +2375,7 @@ public:
 				// After setting up tap, fall through to CONFIG_UPDATE since we also want to do this...
 
 			case ZT_VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE:
-				ZT_FAST_MEMCPY(&(n.config),nwc,sizeof(ZT_VirtualNetworkConfig));
+				memcpy(&(n.config),nwc,sizeof(ZT_VirtualNetworkConfig));
 				if (n.tap) { // sanity check
 #if defined(__WINDOWS__) && !defined(ZT_SDK)
 					// wait for up to 5 seconds for the WindowsEthernetTap to actually be initialized
@@ -2007,11 +2383,11 @@ public:
 					// without WindowsEthernetTap::isInitialized() returning true, the won't actually
 					// be online yet and setting managed routes on it will fail.
 					const int MAX_SLEEP_COUNT = 500;
-					for (int i = 0; !n.tap->isInitialized() && i < MAX_SLEEP_COUNT; i++) {
+					for (int i = 0; !((WindowsEthernetTap *)(n.tap.get()))->isInitialized() && i < MAX_SLEEP_COUNT; i++) {
 						Sleep(10);
 					}
 #endif
-					syncManagedStuff(n,true,true);
+					syncManagedStuff(n,true,true,true);
 					n.tap->setMtu(nwc->mtu);
 				} else {
 					_nets.erase(nwid);
@@ -2023,10 +2399,10 @@ public:
 			case ZT_VIRTUAL_NETWORK_CONFIG_OPERATION_DESTROY:
 				if (n.tap) { // sanity check
 #if defined(__WINDOWS__) && !defined(ZT_SDK)
-					std::string winInstanceId(n.tap->instanceId());
+					std::string winInstanceId(((WindowsEthernetTap *)(n.tap.get()))->instanceId());
 #endif
 					*nuptr = (void *)0;
-					delete n.tap;
+					n.tap.reset();
 					_nets.erase(nwid);
 #if defined(__WINDOWS__) && !defined(ZT_SDK)
 					if ((op == ZT_VIRTUAL_NETWORK_CONFIG_OPERATION_DESTROY)&&(winInstanceId.length() > 0))
@@ -2081,8 +2457,88 @@ public:
 		}
 	}
 
+#if ZT_VAULT_SUPPORT
+	inline bool nodeVaultPutIdentity(enum ZT_StateObjectType type, const void *data, int len)
+	{
+		bool retval = false;
+		if (type != ZT_STATE_OBJECT_IDENTITY_PUBLIC && type != ZT_STATE_OBJECT_IDENTITY_SECRET) {
+			return retval;
+		}
+
+		CURL *curl = curl_easy_init();
+		if (curl) {
+			char token[512] = { 0 };
+			snprintf(token, sizeof(token), "X-Vault-Token: %s", _vaultToken.c_str());
+
+			struct curl_slist *chunk = NULL;
+			chunk = curl_slist_append(chunk, token);
+
+
+			char content_type[512] = { 0 };
+			snprintf(content_type, sizeof(content_type), "Content-Type: application/json");
+
+			chunk = curl_slist_append(chunk, content_type);
+
+			curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+			char url[2048] = { 0 };
+			snprintf(url, sizeof(url), "%s/v1/%s", _vaultURL.c_str(), _vaultPath.c_str());
+
+			curl_easy_setopt(curl, CURLOPT_URL, url);
+
+			json d = json::object();
+			if (type == ZT_STATE_OBJECT_IDENTITY_PUBLIC) {
+				std::string key((const char*)data, len);
+				d["public"] = key;
+			}
+			else if (type == ZT_STATE_OBJECT_IDENTITY_SECRET) {
+				std::string key((const char*)data, len);
+				d["secret"] = key;
+			}
+
+			if (!d.empty()) {
+				std::string post = d.dump();
+
+				if (!post.empty()) {
+					curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post.c_str());
+					curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, post.length());
+
+#ifndef NDEBUG
+					curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+#endif
+
+					CURLcode res = curl_easy_perform(curl);
+					if (res == CURLE_OK) {
+						long response_code = 0;
+						curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+						if (response_code == 200 || response_code == 204) {
+							retval = true;
+						}
+					}
+				}
+			}
+
+			curl_easy_cleanup(curl);
+			curl = NULL;
+			curl_slist_free_all(chunk);
+			chunk = NULL;
+		}
+
+		return retval;
+	}
+#endif
+
 	inline void nodeStatePutFunction(enum ZT_StateObjectType type,const uint64_t id[2],const void *data,int len)
 	{
+#if ZT_VAULT_SUPPORT
+		if (_vaultEnabled && (type == ZT_STATE_OBJECT_IDENTITY_SECRET || type == ZT_STATE_OBJECT_IDENTITY_PUBLIC)) {
+			if (nodeVaultPutIdentity(type, data, len)) {
+				// value successfully written to Vault
+				return;
+			}
+			// else fallback to disk
+		}
+#endif
 		char p[1024];
 		FILE *f;
 		bool secure = false;
@@ -2117,17 +2573,22 @@ public:
 				return;
 		}
 
-		if (len >= 0) {
+		if ((len >= 0)&&(data)) {
 			// Check to see if we've already written this first. This reduces
 			// redundant writes and I/O overhead on most platforms and has
 			// little effect on others.
 			f = fopen(p,"rb");
 			if (f) {
-				char buf[65535];
-				long l = (long)fread(buf,1,sizeof(buf),f);
-				fclose(f);
-				if ((l == (long)len)&&(memcmp(data,buf,l) == 0))
-					return;
+				char *const buf = (char *)malloc(len*4);
+				if (buf) {
+					long l = (long)fread(buf,1,(size_t)(len*4),f);
+					fclose(f);
+					if ((l == (long)len)&&(memcmp(data,buf,l) == 0)) {
+						free(buf);
+						return;
+					}
+					free(buf);
+				}
 			}
 
 			f = fopen(p,"wb");
@@ -2149,8 +2610,93 @@ public:
 		}
 	}
 
+#if ZT_VAULT_SUPPORT
+	inline int nodeVaultGetIdentity(enum ZT_StateObjectType type, void *data, unsigned int maxlen)
+	{
+		if (type != ZT_STATE_OBJECT_IDENTITY_SECRET && type != ZT_STATE_OBJECT_IDENTITY_PUBLIC) {
+			return -1;
+		}
+
+		int ret = -1;
+		CURL *curl = curl_easy_init();
+		if (curl) {
+			char token[512] = { 0 };
+			snprintf(token, sizeof(token), "X-Vault-Token: %s", _vaultToken.c_str());
+
+			struct curl_slist *chunk = NULL;
+			chunk = curl_slist_append(chunk, token);
+			curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+			char url[2048] = { 0 };
+			snprintf(url, sizeof(url), "%s/v1/%s", _vaultURL.c_str(), _vaultPath.c_str());
+
+			curl_easy_setopt(curl, CURLOPT_URL, url);
+
+			std::string response;
+			std::string res_headers;
+
+			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &curlResponseWrite);
+			curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+			curl_easy_setopt(curl, CURLOPT_HEADERDATA, &res_headers);
+
+#ifndef NDEBUG
+			curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+#endif
+
+			CURLcode res = curl_easy_perform(curl);
+
+			if (res == CURLE_OK) {
+				long response_code = 0;
+				curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+				if (response_code == 200) {
+					try {
+						json payload = json::parse(response);
+						if (!payload["data"].is_null()) {
+							json &d = payload["data"];
+							if (type == ZT_STATE_OBJECT_IDENTITY_SECRET) {
+								std::string secret = OSUtils::jsonString(d["secret"],"");
+
+								if (!secret.empty()) {
+									ret = (int)secret.length();
+									memcpy(data, secret.c_str(), ret);
+								}
+							}
+							else if (type == ZT_STATE_OBJECT_IDENTITY_PUBLIC) {
+								std::string pub = OSUtils::jsonString(d["public"],"");
+
+								if (!pub.empty()) {
+									ret = (int)pub.length();
+									memcpy(data, pub.c_str(), ret);
+								}
+							}
+						}
+					}
+					catch (...) {
+						ret = -1;
+					}
+				}
+			}
+
+			curl_easy_cleanup(curl);
+			curl = NULL;
+			curl_slist_free_all(chunk);
+			chunk = NULL;
+		}
+		return ret;
+	}
+#endif
+
 	inline int nodeStateGetFunction(enum ZT_StateObjectType type,const uint64_t id[2],void *data,unsigned int maxlen)
 	{
+#if ZT_VAULT_SUPPORT
+		if (_vaultEnabled && (type == ZT_STATE_OBJECT_IDENTITY_SECRET || type == ZT_STATE_OBJECT_IDENTITY_PUBLIC) ) {
+			int retval = nodeVaultGetIdentity(type, data, maxlen);
+			if (retval >= 0)
+				return retval;
+
+			// else continue file based lookup
+		}
+#endif
 		char p[4096];
 		switch(type) {
 			case ZT_STATE_OBJECT_IDENTITY_PUBLIC:
@@ -2178,6 +2724,17 @@ public:
 		if (f) {
 			int n = (int)fread(data,1,maxlen,f);
 			fclose(f);
+#if ZT_VAULT_SUPPORT
+			if (_vaultEnabled && (type == ZT_STATE_OBJECT_IDENTITY_SECRET || type == ZT_STATE_OBJECT_IDENTITY_PUBLIC)) {
+				// If we've gotten here while Vault is enabled, Vault does not know the key and it's been
+				// read from disk instead.
+				//
+				// We should put the value in Vault and remove the local file.
+				if (nodeVaultPutIdentity(type, data, n)) {
+					unlink(p);
+				}
+			}
+#endif
 			if (n >= 0)
 				return n;
 		}
@@ -2330,7 +2887,7 @@ public:
 		else return 0;
 		const std::vector<InetAddress> *l = lh->get(ztaddr);
 		if ((l)&&(l->size() > 0)) {
-			ZT_FAST_MEMCPY(result,&((*l)[(unsigned long)_node->prng() % l->size()]),sizeof(struct sockaddr_storage));
+			memcpy(result,&((*l)[(unsigned long)_node->prng() % l->size()]),sizeof(struct sockaddr_storage));
 			return 1;
 		} else return 0;
 	}
@@ -2403,6 +2960,7 @@ public:
 #endif
 
 #ifdef __APPLE__
+		if ((ifname[0] == 'f')&&(ifname[1] == 'e')&&(ifname[2] == 't')&&(ifname[3] == 'h')) return false; // ... as is feth#
 		if ((ifname[0] == 'l')&&(ifname[1] == 'o')) return false; // loopback
 		if ((ifname[0] == 'z')&&(ifname[1] == 't')) return false; // sanity check: zt#
 		if ((ifname[0] == 't')&&(ifname[1] == 'u')&&(ifname[2] == 'n')) return false; // tun# is probably an OpenVPN tunnel or similar
@@ -2416,6 +2974,7 @@ public:
 				if (!strncmp(p->c_str(),ifname,p->length()))
 					return false;
 			}
+			return _node->bondController()->allowedToBind(std::string(ifname));
 		}
 		{
 			// Check global blacklists
