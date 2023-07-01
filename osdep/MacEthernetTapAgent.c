@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 /*
  * This creates a pair of feth devices with the lower numbered device
@@ -30,10 +17,10 @@
  * used to actually read and write packets. The latter gets no IP config
  * and is only used for I/O. The behavior of feth is similar to the
  * veth pairs that exist on Linux.
- * 
+ *
  * The feth device has only existed since MacOS Sierra, but that's fairly
  * long ago in Mac terms.
- * 
+ *
  * I/O with feth must be done using two different sockets. The BPF socket
  * is used to receive packets, while an AF_NDRV (low-level network driver
  * access) socket must be used to inject. AF_NDRV can't read IP frames
@@ -41,20 +28,20 @@
  * been handled, and while BPF can inject its MTU for injected packets
  * is limited to 2048. AF_NDRV packet injection is required to inject
  * ZeroTier's large MTU frames.
- * 
- * Benchmarks show that this performs similarly to the old tap.kext driver,
- * and a kext is no longer required. Splitting it off into an agent will
- * also make it easier to have zerotier-one itself drop permissions.
- * 
+ *
  * All this stuff is basically undocumented. A lot of tracing through
  * the Darwin/XNU kernel source was required to figure out how to make
  * this actually work.
  * 
+ * We hope to develop a DriverKit-based driver in the near-mid future to
+ * replace this weird hack, but it works for now through Big Sur in our
+ * testing.
+ *
  * See also:
- * 
+ *
  * https://apple.stackexchange.com/questions/337715/fake-ethernet-interfaces-feth-if-fake-anyone-ever-seen-this
  * https://opensource.apple.com/source/xnu/xnu-4570.41.2/bsd/net/if_fake.c.auto.html
- * 
+ *
  */
 
 #include <stdio.h>
@@ -77,6 +64,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
+#include <sys/resource.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/bpf.h>
@@ -169,7 +157,7 @@ static int run(const char *path,...)
 	args[argNo++] = (char *)0;
 	va_end(ap);
 
-	pid_t pid = vfork();
+	pid_t pid = fork();
 	if (pid < 0) {
 		return -1;
 	} else if (pid == 0) {
@@ -188,10 +176,18 @@ static void die()
 		close(s_ndrvfd);
 	if (s_bpffd >= 0)
 		close(s_bpffd);
-	if (s_deviceName[0])
-		run("/sbin/ifconfig",s_deviceName,"destroy",(char *)0);
 	if (s_peerDeviceName[0])
 		run("/sbin/ifconfig",s_peerDeviceName,"destroy",(char *)0);
+	if (s_deviceName[0])
+		run("/sbin/ifconfig",s_deviceName,"destroy",(char *)0);
+}
+
+static inline void close_inherited_fds()
+{
+	struct rlimit lim;
+	getrlimit(RLIMIT_NOFILE, &lim);
+	for (int i=3,j=(int)lim.rlim_cur;i<j;++i)
+		close(i);
 }
 
 int main(int argc,char **argv)
@@ -218,6 +214,8 @@ int main(int argc,char **argv)
 	signal(SIGKILL,&exit);
 	signal(SIGINT,&exit);
 	signal(SIGPIPE,&exit);
+
+	close_inherited_fds();
 
 	if (getuid() != 0) {
 		if (setuid(0) != 0) {
@@ -260,7 +258,7 @@ int main(int argc,char **argv)
 	usleep(10);
 	run(P_IFCONFIG,s_peerDeviceName,"peer",s_deviceName,(char *)0);
 	usleep(10);
-	run(P_IFCONFIG,s_peerDeviceName,"mtu","16370","up",(char *)0); /* 16370 is the largest MTU MacOS/Darwin seems to allow */
+	run(P_IFCONFIG,s_peerDeviceName,"mtu",mtu,"up",(char *)0);
 	usleep(10);
 	run(P_IFCONFIG,s_deviceName,"mtu",mtu,"metric",metric,"up",(char *)0);
 	usleep(10);

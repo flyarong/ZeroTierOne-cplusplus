@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_DICTIONARY_HPP
 #define ZT_DICTIONARY_HPP
@@ -68,10 +55,14 @@ public:
 	{
 		for(unsigned int i=0;i<C;++i) {
 			if ((s)&&(i < len)) {
-				if (!(_d[i] = *s))
+				if (!(_d[i] = *s)) {
 					s = (const char *)0;
-				else ++s;
-			} else _d[i] = (char)0;
+				} else {
+					++s;
+				}
+			} else {
+				_d[i] = (char)0;
+			}
 		}
 		_d[C - 1] = (char)0;
 	}
@@ -95,10 +86,14 @@ public:
 	{
 		for(unsigned int i=0;i<C;++i) {
 			if (s) {
-				if (!(_d[i] = *s))
+				if (!(_d[i] = *s)) {
 					s = (const char *)0;
-				else ++s;
-			} else _d[i] = (char)0;
+				} else {
+					++s;
+				}
+			} else {
+				_d[i] = (char)0;
+			}
 		}
 		_d[C - 1] = (char)0;
 		return (!s);
@@ -118,8 +113,9 @@ public:
 	inline unsigned int sizeBytes() const
 	{
 		for(unsigned int i=0;i<C;++i) {
-			if (!_d[i])
+			if (!_d[i]) {
 				return i;
+			}
 		}
 		return C-1;
 	}
@@ -154,14 +150,16 @@ public:
 		bool esc;
 		int j;
 
-		if (!destlen) // sanity check
+		if (!destlen) { // sanity check
 			return -1;
+		}
 
 		while (*p) {
 			k = key;
 			while ((*k)&&(*p)) {
-				if (*p != *k)
+				if (*p != *k) {
 					break;
+				}
 				++k;
 				if (++p == eof) {
 					dest[0] = (char)0;
@@ -177,11 +175,21 @@ public:
 					if (esc) {
 						esc = false;
 						switch(*p) {
-							case 'r': dest[j++] = 13; break;
-							case 'n': dest[j++] = 10; break;
-							case '0': dest[j++] = (char)0; break;
-							case 'e': dest[j++] = '='; break;
-							default: dest[j++] = *p; break;
+							case 'r':
+								dest[j++] = 13;
+								break;
+							case 'n':
+								dest[j++] = 10;
+								break;
+							case '0':
+								dest[j++] = (char)0;
+								break;
+							case 'e':
+								dest[j++] = '=';
+								break;
+							default:
+								dest[j++] = *p;
+								break;
 						}
 						if (j == (int)destlen) {
 							dest[j-1] = (char)0;
@@ -215,8 +223,9 @@ public:
 						dest[0] = (char)0;
 						return -1;
 					}
+				} else {
+					break;
 				}
-				else break;
 			}
 		}
 
@@ -255,8 +264,9 @@ public:
 	bool getB(const char *key,bool dfl = false) const
 	{
 		char tmp[4];
-		if (this->get(key,tmp,sizeof(tmp)) >= 0)
+		if (this->get(key,tmp,sizeof(tmp)) >= 0) {
 			return ((*tmp == '1')||(*tmp == 't')||(*tmp == 'T'));
+		}
 		return dfl;
 	}
 
@@ -270,8 +280,9 @@ public:
 	inline uint64_t getUI(const char *key,uint64_t dfl = 0) const
 	{
 		char tmp[128];
-		if (this->get(key,tmp,sizeof(tmp)) >= 1)
+		if (this->get(key,tmp,sizeof(tmp)) >= 1) {
 			return Utils::hexStrToU64(tmp);
+		}
 		return dfl;
 	}
 
@@ -285,8 +296,9 @@ public:
 	inline int64_t getI(const char *key,int64_t dfl = 0) const
 	{
 		char tmp[128];
-		if (this->get(key,tmp,sizeof(tmp)) >= 1)
+		if (this->get(key,tmp,sizeof(tmp)) >= 1) {
 			return Utils::hexStrTo64(tmp);
+		}
 		return dfl;
 	}
 
@@ -348,11 +360,21 @@ public:
 								return false;
 							}
 							switch(*p) {
-								case 0: _d[j++] = '0'; break;
-								case 13: _d[j++] = 'r'; break;
-								case 10: _d[j++] = 'n'; break;
-								case '\\': _d[j++] = '\\'; break;
-								case '=': _d[j++] = 'e'; break;
+								case 0:
+									_d[j++] = '0';
+									break;
+								case 13:
+									_d[j++] = 'r';
+									break;
+								case 10:
+									_d[j++] = 'n';
+									break;
+								case '\\':
+									_d[j++] = '\\';
+									break;
+								case '=':
+									_d[j++] = 'e';
+									break;
 							}
 							if (j == C) {
 								_d[i] = (char)0;
@@ -387,7 +409,7 @@ public:
 		return this->add(key,(value) ? "1" : "0",1);
 	}
 
-	/** 
+	/**
 	 * Add a 64-bit integer (unsigned) as a hex value
 	 */
 	inline bool add(const char *key,uint64_t value)
@@ -396,7 +418,7 @@ public:
 		return this->add(key,Utils::hex(value,tmp),-1);
 	}
 
-	/** 
+	/**
 	 * Add a 64-bit integer (unsigned) as a hex value
 	 */
 	inline bool add(const char *key,int64_t value)
@@ -410,7 +432,7 @@ public:
 		}
 	}
 
-	/** 
+	/**
 	 * Add a 64-bit integer (unsigned) as a hex value
 	 */
 	inline bool add(const char *key,const Address &a)

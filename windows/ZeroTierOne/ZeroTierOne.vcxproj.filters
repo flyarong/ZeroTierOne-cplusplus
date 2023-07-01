@@ -82,13 +82,13 @@
     <Filter Include="Header Files\controller">
       <UniqueIdentifier>{7dc22e9c-f869-41e7-b43d-f07f5b94f6fb}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\ext\cpp-httplib">
+      <UniqueIdentifier>{4dfde4c7-2950-40ee-92f2-05e0916d36c5}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\service\OneService.cpp">
       <Filter>Source Files\service</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\osdep\WindowsEthernetTap.cpp">
-      <Filter>Source Files\osdep</Filter>
     </ClCompile>
     <ClCompile Include="..\..\osdep\Http.cpp">
       <Filter>Source Files\osdep</Filter>
@@ -261,8 +261,38 @@
     <ClCompile Include="..\..\controller\PostgreSQL.cpp">
       <Filter>Source Files\controller</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\controller\RabbitMQ.cpp">
+    <ClCompile Include="..\..\controller\LFDB.cpp">
       <Filter>Source Files\controller</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\controller\DBMirrorSet.cpp">
+      <Filter>Source Files\controller</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\osdep\EthernetTap.cpp">
+      <Filter>Source Files\osdep</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\node\Bond.cpp">
+      <Filter>Source Files\node</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\osdep\WinDNSHelper.cpp">
+      <Filter>Source Files\osdep</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\osdep\WindowsEthernetTap.cpp">
+      <Filter>Source Files\osdep</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\node\AES.cpp">
+      <Filter>Source Files\node</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\node\AES_aesni.cpp">
+      <Filter>Source Files\node</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\node\AES_armcrypto.cpp">
+      <Filter>Source Files\node</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\osdep\WinFWHelper.cpp">
+      <Filter>Source Files\osdep</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\node\Metrics.cpp">
+      <Filter>Source Files\node</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -503,8 +533,35 @@
     <ClInclude Include="..\..\controller\PostgreSQL.hpp">
       <Filter>Header Files\controller</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\controller\RabbitMQ.hpp">
+    <ClInclude Include="..\..\controller\LFDB.hpp">
       <Filter>Header Files\controller</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\ext\cpp-httplib\httplib.h">
+      <Filter>Header Files\ext\cpp-httplib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\controller\DBMirrorSet.hpp">
+      <Filter>Header Files\controller</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\osdep\EthernetTap.hpp">
+      <Filter>Header Files\osdep</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\node\Bond.hpp">
+      <Filter>Header Files\node</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\node\BondController.hpp">
+      <Filter>Header Files\node</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\controller\Redis.hpp">
+      <Filter>Header Files\controller</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\osdep\WinDNSHelper.hpp">
+      <Filter>Header Files\osdep</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\osdep\WinFWHelper.hpp">
+      <Filter>Header Files\osdep</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\node\Metrics.hpp">
+      <Filter>Header Files\node</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

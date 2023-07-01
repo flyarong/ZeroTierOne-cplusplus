@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include "../node/Constants.hpp"
 
@@ -32,8 +19,8 @@
 #include <string.h>
 
 #ifdef __WINDOWS__
-#include <WinSock2.h>
-#include <Windows.h>
+#include <winsock2.h>
+#include <windows.h>
 #include <netioapi.h>
 #include <IPHlpApi.h>
 #endif
@@ -62,10 +49,11 @@
 #include <utility>
 
 #include "ManagedRoute.hpp"
+#ifdef __LINUX__
+#include "LinuxNetLink.hpp"
+#endif
 
 #define ZT_BSD_ROUTE_CMD "/sbin/route"
-#define ZT_LINUX_IP_COMMAND "/sbin/ip"
-#define ZT_LINUX_IP_COMMAND_2 "/usr/sbin/ip"
 
 namespace ZeroTier {
 
@@ -262,14 +250,26 @@ static void _routeCmd(const char *op,const InetAddress &target,const InetAddress
 		char iptmp[64];
 		if (via) {
 			if ((ifscope)&&(ifscope[0])) {
+#ifdef ZT_TRACE
+				fprintf(stderr, "DEBUG: route %s -ifscope %s %s %s" ZT_EOL_S, ifscope,((target.ss_family == AF_INET6) ? "-inet6" : "-inet"),target.toString(ttmp),via.toIpString(iptmp));
+#endif
 				::execl(ZT_BSD_ROUTE_CMD,ZT_BSD_ROUTE_CMD,op,"-ifscope",ifscope,((target.ss_family == AF_INET6) ? "-inet6" : "-inet"),target.toString(ttmp),via.toIpString(iptmp),(const char *)0);
 			} else {
+#ifdef ZT_TRACE
+				fprintf(stderr, "DEBUG: route %s %s %s %s" ZT_EOL_S, op,((target.ss_family == AF_INET6) ? "-inet6" : "-inet"),target.toString(ttmp),via.toIpString(iptmp));
+#endif
 				::execl(ZT_BSD_ROUTE_CMD,ZT_BSD_ROUTE_CMD,op,((target.ss_family == AF_INET6) ? "-inet6" : "-inet"),target.toString(ttmp),via.toIpString(iptmp),(const char *)0);
 			}
 		} else if ((localInterface)&&(localInterface[0])) {
 			if ((ifscope)&&(ifscope[0])) {
+#ifdef ZT_TRACE
+				fprintf(stderr, "DEBUG: route %s -ifscope %s %s %s -interface %s" ZT_EOL_S, op, ifscope,((target.ss_family == AF_INET6) ? "-inet6" : "-inet"),target.toString(ttmp),localInterface);
+#endif
 				::execl(ZT_BSD_ROUTE_CMD,ZT_BSD_ROUTE_CMD,op,"-ifscope",ifscope,((target.ss_family == AF_INET6) ? "-inet6" : "-inet"),target.toString(ttmp),"-interface",localInterface,(const char *)0);
 			} else {
+#ifdef ZT_TRACE
+				fprintf(stderr, "DEBUG: route %s %s %s -interface %s" ZT_EOL_S, op,((target.ss_family == AF_INET6) ? "-inet6" : "-inet"),target.toString(ttmp),localInterface);
+#endif
 				::execl(ZT_BSD_ROUTE_CMD,ZT_BSD_ROUTE_CMD,op,((target.ss_family == AF_INET6) ? "-inet6" : "-inet"),target.toString(ttmp),"-interface",localInterface,(const char *)0);
 			}
 		}
@@ -282,26 +282,7 @@ static void _routeCmd(const char *op,const InetAddress &target,const InetAddress
 #ifdef __LINUX__ // ----------------------------------------------------------
 #define ZT_ROUTING_SUPPORT_FOUND 1
 
-static void _routeCmd(const char *op,const InetAddress &target,const InetAddress &via,const char *localInterface)
-{
-	long p = (long)fork();
-	if (p > 0) {
-		int exitcode = -1;
-		::waitpid(p,&exitcode,0);
-	} else if (p == 0) {
-		::close(STDOUT_FILENO);
-		::close(STDERR_FILENO);
-		char ipbuf[64],ipbuf2[64];
-		if (via) {
-			::execl(ZT_LINUX_IP_COMMAND,ZT_LINUX_IP_COMMAND,(target.ss_family == AF_INET6) ? "-6" : "-4","route",op,target.toString(ipbuf),"via",via.toIpString(ipbuf2),(const char *)0);
-			::execl(ZT_LINUX_IP_COMMAND_2,ZT_LINUX_IP_COMMAND_2,(target.ss_family == AF_INET6) ? "-6" : "-4","route",op,target.toString(ipbuf),"via",via.toIpString(ipbuf2),(const char *)0);
-		} else if ((localInterface)&&(localInterface[0])) {
-			::execl(ZT_LINUX_IP_COMMAND,ZT_LINUX_IP_COMMAND,(target.ss_family == AF_INET6) ? "-6" : "-4","route",op,target.toString(ipbuf),"dev",localInterface,(const char *)0);
-			::execl(ZT_LINUX_IP_COMMAND_2,ZT_LINUX_IP_COMMAND_2,(target.ss_family == AF_INET6) ? "-6" : "-4","route",op,target.toString(ipbuf),"dev",localInterface,(const char *)0);
-		}
-		::_exit(-1);
-	}
-}
+// This has been replaced by LinuxNetLink
 
 #endif // __LINUX__ ----------------------------------------------------------
 
@@ -401,6 +382,33 @@ static bool _winHasRoute(const NET_LUID &interfaceLuid, const NET_IFINDEX &inter
 
 } // anonymous namespace
 
+ManagedRoute::ManagedRoute(const InetAddress &target,const InetAddress &via,const InetAddress &src,const char *device)
+{
+	_target = target;
+	_via = via;
+	_src = src;
+
+	if (_via.ss_family == AF_INET) {
+		_via.setPort(32);
+	} else if (_via.ss_family == AF_INET6) {
+		_via.setPort(128);
+	}
+
+	if (_src.ss_family == AF_INET) {
+		_src.setPort(32);
+	} else if (_src.ss_family == AF_INET6) {
+		_src.setPort(128);
+	}
+
+	Utils::scopy(_device,sizeof(_device),device);
+	_systemDevice[0] = (char)0;
+}
+
+ManagedRoute::~ManagedRoute()
+{
+	this->remove();
+}
+
 /* Linux NOTE: for default route override, some Linux distributions will
  * require a change to the rp_filter parameter. A value of '1' will prevent
  * default route override from working properly.
@@ -431,6 +439,24 @@ bool ManagedRoute::sync()
 
 #ifdef __BSD__ // ------------------------------------------------------------
 
+	if (_device[0]) {
+		bool haveDevice = false;
+		struct ifaddrs *ifa = (struct ifaddrs *)0;
+		if (!getifaddrs(&ifa)) {
+			struct ifaddrs *p = ifa;
+			while (p) {
+				if ((p->ifa_name)&&(!strcmp(_device, p->ifa_name))) {
+					haveDevice = true;
+					break;
+				}
+				p = p->ifa_next;
+			}
+			freeifaddrs(ifa);
+		}
+		if (!haveDevice)
+			return false;
+	}
+
 	// Find lowest metric system route that this route should override (if any)
 	InetAddress newSystemVia;
 	char newSystemDevice[128];
@@ -451,7 +477,7 @@ bool ManagedRoute::sync()
 	if ((newSystemVia)&&(!newSystemDevice[0])) {
 		rtes = _getRTEs(newSystemVia,true);
 		for(std::vector<_RTE>::iterator r(rtes.begin());r!=rtes.end();++r) {
-			if ( (r->device[0]) && (strcmp(r->device,_device) != 0) ) {
+			if ( (r->device[0]) && (strcmp(r->device,_device) != 0) && r->target.netmaskBits() != 0) {
 				Utils::scopy(newSystemDevice,sizeof(newSystemDevice),r->device);
 				break;
 			}
@@ -475,36 +501,38 @@ bool ManagedRoute::sync()
 
 		if (_systemVia) {
 			_routeCmd("add",leftt,_systemVia,_systemDevice,(const char *)0);
-			_routeCmd("change",leftt,_systemVia,_systemDevice,(const char *)0);
+			//_routeCmd("change",leftt,_systemVia,_systemDevice,(const char *)0);
 			if (rightt) {
 				_routeCmd("add",rightt,_systemVia,_systemDevice,(const char *)0);
-				_routeCmd("change",rightt,_systemVia,_systemDevice,(const char *)0);
+				//_routeCmd("change",rightt,_systemVia,_systemDevice,(const char *)0);
 			}
 		}
 	}
 
-	if (!_applied.count(leftt)) {
-		_applied[leftt] = false; // not ifscoped
+	if (leftt && !_applied.count(leftt)) {
+		_applied[leftt] = !_via;
+		//_routeCmd("delete",leftt,_via,(const char *)0,(_via) ? (const char *)0 : _device);
 		_routeCmd("add",leftt,_via,(const char *)0,(_via) ? (const char *)0 : _device);
-		_routeCmd("change",leftt,_via,(const char *)0,(_via) ? (const char *)0 : _device);
+		//_routeCmd("change",leftt,_via,(const char *)0,(_via) ? (const char *)0 : _device);
 	}
-	if ((rightt)&&(!_applied.count(rightt))) {
-		_applied[rightt] = false; // not ifscoped
+	if (rightt && !_applied.count(rightt)) {
+		_applied[rightt] = !_via;
+		//_routeCmd("delete",rightt,_via,(const char *)0,(_via) ? (const char *)0 : _device);
 		_routeCmd("add",rightt,_via,(const char *)0,(_via) ? (const char *)0 : _device);
-		_routeCmd("change",rightt,_via,(const char *)0,(_via) ? (const char *)0 : _device);
+		//_routeCmd("change",rightt,_via,(const char *)0,(_via) ? (const char *)0 : _device);
 	}
 
 #endif // __BSD__ ------------------------------------------------------------
 
 #ifdef __LINUX__ // ----------------------------------------------------------
 
-	if (!_applied.count(leftt)) {
+	if ((leftt)&&(!LinuxNetLink::getInstance().routeIsSet(leftt,_via,_src,_device))) {
 		_applied[leftt] = false; // boolean unused
-		_routeCmd("replace",leftt,_via,(_via) ? (const char *)0 : _device);
+		LinuxNetLink::getInstance().addRoute(leftt, _via, _src, _device);
 	}
-	if ((rightt)&&(!_applied.count(rightt))) {
+	if ((rightt)&&(!LinuxNetLink::getInstance().routeIsSet(rightt,_via,_src,_device))) {
 		_applied[rightt] = false; // boolean unused
-		_routeCmd("replace",rightt,_via,(_via) ? (const char *)0 : _device);
+		LinuxNetLink::getInstance().addRoute(rightt, _via, _src, _device);
 	}
 
 #endif // __LINUX__ ----------------------------------------------------------
@@ -552,7 +580,8 @@ void ManagedRoute::remove()
 #endif // __BSD__ ------------------------------------------------------------
 
 #ifdef __LINUX__ // ----------------------------------------------------------
-		_routeCmd("del",r->first,_via,(_via) ? (const char *)0 : _device);
+		//_routeCmd("del",r->first,_via,(_via) ? (const char *)0 : _device);
+		LinuxNetLink::getInstance().delRoute(r->first,_via,_src,(_via) ? (const char *)0 : _device);
 #endif // __LINUX__ ----------------------------------------------------------
 
 #ifdef __WINDOWS__ // --------------------------------------------------------

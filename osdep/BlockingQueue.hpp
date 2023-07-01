@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_BLOCKINGQUEUE_HPP
 #define ZT_BLOCKINGQUEUE_HPP
@@ -31,8 +18,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
-
-#include "Thread.hpp"
+#include <atomic>
+#include <vector>
 
 namespace ZeroTier {
 
@@ -80,7 +67,8 @@ public:
 	inline bool get(T &value)
 	{
 		std::unique_lock<std::mutex> lock(m);
-		if (!r) return false;
+		if (!r)
+			return false;
 		while (q.empty()) {
 			c.wait(lock);
 			if (!r) {
@@ -94,6 +82,16 @@ public:
 		return true;
 	}
 
+	inline std::vector<T> drain()
+	{
+		std::vector<T> v;
+		while (!q.empty()) {
+			v.push_back(q.front());
+			q.pop();
+		}
+		return v;
+	}
+
 	enum TimedWaitResult
 	{
 		OK,
@@ -105,7 +103,8 @@ public:
 	{
 		const std::chrono::milliseconds ms2{ms};
 		std::unique_lock<std::mutex> lock(m);
-		if (!r) return STOP;
+		if (!r)
+			return STOP;
 		while (q.empty()) {
 			if (c.wait_for(lock,ms2) == std::cv_status::timeout)
 				return ((r) ? TIMED_OUT : STOP);
@@ -117,11 +116,15 @@ public:
 		return OK;
 	}
 
+	inline size_t size() const {
+		return q.size();
+	}
+
 private:
-	volatile bool r;
 	std::queue<T> q;
 	mutable std::mutex m;
 	mutable std::condition_variable c,gc;
+	std::atomic_bool r;
 };
 
 } // namespace ZeroTier

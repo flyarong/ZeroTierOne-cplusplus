@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_RINGBUFFER_H
 #define ZT_RINGBUFFER_H
@@ -40,7 +27,7 @@ namespace ZeroTier {
  * A circular buffer
  *
  * For fast handling of continuously-evolving variables (such as path quality metrics).
- * Using this, we can maintain longer sliding historical windows for important path 
+ * Using this, we can maintain longer sliding historical windows for important path
  * metrics without the need for potentially expensive calls to memcpy/memmove.
  *
  * Some basic statistical functionality is implemented here in an attempt
@@ -73,7 +60,7 @@ public:
 		return buf + begin;
 	}
 
-	/** 
+	/**
 	 * Adjust buffer index pointer as if we copied data in
 	 * @param n Number of elements to copy in
 	 * @return Number of elements we copied in
@@ -96,13 +83,13 @@ public:
 		return n;
 	}
 
-	/** 
-	 * Fast erase, O(1). 
+	/**
+	 * Fast erase, O(1).
 	 * Merely reset the buffer pointer, doesn't erase contents
 	 */
 	inline void reset() { consume(count()); }
 
-	/** 
+	/**
 	 * adjust buffer index pointer as if we copied data out
 	 * @param n Number of elements we copied from the buffer
 	 * @return Number of elements actually available from the buffer
@@ -206,11 +193,9 @@ public:
 	{
 		if (end == begin) {
 			return wrap ? S : 0;
-		}
-		else if (end > begin) {
+		} else if (end > begin) {
 			return end - begin;
-		}
-		else {
+		} else {
 			return S + end - begin;
 		}
 	}
@@ -249,6 +234,21 @@ public:
 			subtotal += (float)*(buf + iterator);
 		}
 		return curr_cnt ? subtotal / (float)curr_cnt : 0;
+	}
+
+	/**
+	 * @return The sum of the contents of the buffer
+	 */
+	inline float sum()
+	{
+		size_t iterator = begin;
+		float total = 0;
+		size_t curr_cnt = count();
+		for (size_t i=0; i<curr_cnt; i++) {
+			iterator = (iterator + S - 1) % curr_cnt;
+			total += (float)*(buf + iterator);
+		}
+		return total;
 	}
 
 	/**
@@ -319,10 +319,10 @@ public:
 		for (size_t i=0; i<S; i++) {
 			iterator = (iterator + S - 1) % S;
 			if (typeid(T) == typeid(int)) {
-				 //DEBUG_INFO("buf[%2zu]=%2d", iterator, (int)*(buf + iterator));
+				fprintf(stderr, "buf[%2zu]=%2d\n", iterator, (int)*(buf + iterator));
 			}
 			else {
-				 //DEBUG_INFO("buf[%2zu]=%2f", iterator, (float)*(buf + iterator));
+				fprintf(stderr, "buf[%2zu]=%2f\n", iterator, (float)*(buf + iterator));
 			}
 		}
 	}

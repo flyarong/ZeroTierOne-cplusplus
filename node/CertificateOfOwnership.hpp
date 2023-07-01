@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_CERTIFICATEOFOWNERSHIP_HPP
 #define ZT_CERTIFICATEOFOWNERSHIP_HPP
@@ -93,10 +80,12 @@ public:
 
 	inline bool owns(const InetAddress &ip) const
 	{
-		if (ip.ss_family == AF_INET)
+		if (ip.ss_family == AF_INET) {
 			return this->_owns(THING_IPV4_ADDRESS,&(reinterpret_cast<const struct sockaddr_in *>(&ip)->sin_addr.s_addr),4);
-		if (ip.ss_family == AF_INET6)
+		}
+		if (ip.ss_family == AF_INET6) {
 			return this->_owns(THING_IPV6_ADDRESS,reinterpret_cast<const struct sockaddr_in6 *>(&ip)->sin6_addr.s6_addr,16);
+		}
 		return false;
 	}
 
@@ -109,7 +98,9 @@ public:
 
 	inline void addThing(const InetAddress &ip)
 	{
-		if (_thingCount >= ZT_CERTIFICATEOFOWNERSHIP_MAX_THINGS) return;
+		if (_thingCount >= ZT_CERTIFICATEOFOWNERSHIP_MAX_THINGS) {
+			return;
+		}
 		if (ip.ss_family == AF_INET) {
 			_thingTypes[_thingCount] = THING_IPV4_ADDRESS;
 			memcpy(_thingValues[_thingCount],&(reinterpret_cast<const struct sockaddr_in *>(&ip)->sin_addr.s_addr),4);
@@ -123,7 +114,9 @@ public:
 
 	inline void addThing(const MAC &mac)
 	{
-		if (_thingCount >= ZT_CERTIFICATEOFOWNERSHIP_MAX_THINGS) return;
+		if (_thingCount >= ZT_CERTIFICATEOFOWNERSHIP_MAX_THINGS) {
+			return;
+		}
 		_thingTypes[_thingCount] = THING_MAC_ADDRESS;
 		mac.copyTo(_thingValues[_thingCount],6);
 		++_thingCount;
@@ -155,7 +148,9 @@ public:
 	template<unsigned int C>
 	inline void serialize(Buffer<C> &b,const bool forSign = false) const
 	{
-		if (forSign) b.append((uint64_t)0x7f7f7f7f7f7f7f7fULL);
+		if (forSign) {
+			b.append((uint64_t)0x7f7f7f7f7f7f7f7fULL);
+		}
 
 		b.append(_networkId);
 		b.append(_ts);
@@ -177,7 +172,9 @@ public:
 
 		b.append((uint16_t)0); // length of additional fields, currently 0
 
-		if (forSign) b.append((uint64_t)0x7f7f7f7f7f7f7f7fULL);
+		if (forSign) {
+			b.append((uint64_t)0x7f7f7f7f7f7f7f7fULL);
+		}
 	}
 
 	template<unsigned int C>
@@ -187,11 +184,16 @@ public:
 
 		*this = CertificateOfOwnership();
 
-		_networkId = b.template at<uint64_t>(p); p += 8;
-		_ts = b.template at<uint64_t>(p); p += 8;
-		_flags = b.template at<uint64_t>(p); p += 8;
-		_id = b.template at<uint32_t>(p); p += 4;
-		_thingCount = b.template at<uint16_t>(p); p += 2;
+		_networkId = b.template at<uint64_t>(p);
+		p += 8;
+		_ts = b.template at<uint64_t>(p);
+		p += 8;
+		_flags = b.template at<uint64_t>(p);
+		p += 8;
+		_id = b.template at<uint32_t>(p);
+		p += 4;
+		_thingCount = b.template at<uint16_t>(p);
+		p += 2;
 		for(unsigned int i=0,j=_thingCount;i<j;++i) {
 			if (i < ZT_CERTIFICATEOFOWNERSHIP_MAX_THINGS) {
 				_thingTypes[i] = (uint8_t)b[p++];
@@ -200,20 +202,25 @@ public:
 			}
 		}
 
-		_issuedTo.setTo(b.field(p,ZT_ADDRESS_LENGTH),ZT_ADDRESS_LENGTH); p += ZT_ADDRESS_LENGTH;
-		_signedBy.setTo(b.field(p,ZT_ADDRESS_LENGTH),ZT_ADDRESS_LENGTH); p += ZT_ADDRESS_LENGTH;
+		_issuedTo.setTo(b.field(p,ZT_ADDRESS_LENGTH),ZT_ADDRESS_LENGTH);
+		p += ZT_ADDRESS_LENGTH;
+		_signedBy.setTo(b.field(p,ZT_ADDRESS_LENGTH),ZT_ADDRESS_LENGTH);
+		p += ZT_ADDRESS_LENGTH;
 		if (b[p++] == 1) {
-			if (b.template at<uint16_t>(p) != ZT_C25519_SIGNATURE_LEN)
+			if (b.template at<uint16_t>(p) != ZT_C25519_SIGNATURE_LEN) {
 				throw ZT_EXCEPTION_INVALID_SERIALIZED_DATA_INVALID_CRYPTOGRAPHIC_TOKEN;
+			}
 			p += 2;
-			memcpy(_signature.data,b.field(p,ZT_C25519_SIGNATURE_LEN),ZT_C25519_SIGNATURE_LEN); p += ZT_C25519_SIGNATURE_LEN;
+			memcpy(_signature.data,b.field(p,ZT_C25519_SIGNATURE_LEN),ZT_C25519_SIGNATURE_LEN);
+			p += ZT_C25519_SIGNATURE_LEN;
 		} else {
 			p += 2 + b.template at<uint16_t>(p);
 		}
 
 		p += 2 + b.template at<uint16_t>(p);
-		if (p > b.size())
+		if (p > b.size()) {
 			throw ZT_EXCEPTION_INVALID_SERIALIZED_DATA_OVERFLOW;
+		}
 
 		return (p - startAt);
 	}

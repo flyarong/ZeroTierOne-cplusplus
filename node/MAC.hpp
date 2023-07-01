@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_MAC_HPP
 #define ZT_MAC_HPP
@@ -84,11 +71,16 @@ public:
 			return;
 		}
 		const unsigned char *b = (const unsigned char *)bits;
-		_m =  ((((uint64_t)*b) & 0xff) << 40); ++b;
-		_m |= ((((uint64_t)*b) & 0xff) << 32); ++b;
-		_m |= ((((uint64_t)*b) & 0xff) << 24); ++b;
-		_m |= ((((uint64_t)*b) & 0xff) << 16); ++b;
-		_m |= ((((uint64_t)*b) & 0xff) << 8); ++b;
+		_m =  ((((uint64_t)*b) & 0xff) << 40);
+		++b;
+		_m |= ((((uint64_t)*b) & 0xff) << 32);
+		++b;
+		_m |= ((((uint64_t)*b) & 0xff) << 24);
+		++b;
+		_m |= ((((uint64_t)*b) & 0xff) << 16);
+		++b;
+		_m |= ((((uint64_t)*b) & 0xff) << 8);
+		++b;
 		_m |= (((uint64_t)*b) & 0xff);
 	}
 
@@ -98,8 +90,9 @@ public:
 	 */
 	inline void copyTo(void *buf,unsigned int len) const
 	{
-		if (len < 6)
+		if (len < 6) {
 			return;
+		}
 		unsigned char *b = (unsigned char *)buf;
 		*(b++) = (unsigned char)((_m >> 40) & 0xff);
 		*(b++) = (unsigned char)((_m >> 32) & 0xff);
@@ -162,7 +155,7 @@ public:
 	/**
 	 * Get the ZeroTier address for this MAC on this network (assuming no bridging of course, basic unicast)
 	 *
-	 * This just XORs the next-lest-significant 5 bytes of the network ID again to unmask.
+	 * This just XORs the next-least-significant 5 bytes of the network ID again to unmask.
 	 *
 	 * @param nwid Network ID
 	 */

@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +34,7 @@ namespace ZeroTier {
 static inline void _computeMemoryHardHash(const void *publicKey,unsigned int publicKeyBytes,void *digest,void *genmem)
 {
 	// Digest publicKey[] to obtain initial digest
-	SHA512::hash(digest,publicKey,publicKeyBytes);
+	SHA512(digest,publicKey,publicKeyBytes);
 
 	// Initialize genmem[] using Salsa20 in a CBC-like configuration since
 	// ordinary Salsa20 is randomly seek-able. This is good for a cipher
@@ -106,8 +93,9 @@ void Identity::generate()
 	} while (_address.isReserved());
 
 	_publicKey = kp.pub;
-	if (!_privateKey)
+	if (!_privateKey) {
 		_privateKey = new C25519::Private();
+	}
 	*_privateKey = kp.priv;
 
 	delete [] genmem;
@@ -115,8 +103,9 @@ void Identity::generate()
 
 bool Identity::locallyValidate() const
 {
-	if (_address.isReserved())
+	if (_address.isReserved()) {
 		return false;
+	}
 
 	unsigned char digest[64];
 	char *genmem = new char[ZT_IDENTITY_GEN_MEMORY];

@@ -1,41 +1,28 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <WinSock2.h>
-#include <Windows.h>
+#include <winsock2.h>
+#include <windows.h>
 #include <tchar.h>
 #include <malloc.h>
 #include <winreg.h>
 #include <wchar.h>
 #include <ws2ipdef.h>
-#include <WS2tcpip.h>
+#include <ws2tcpip.h>
 #include <IPHlpApi.h>
 #include <nldef.h>
 #include <netioapi.h>
@@ -57,6 +44,9 @@
 #include "OSUtils.hpp"
 
 #include "..\windows\TapDriver6\tap-windows.h"
+#include "WinDNSHelper.hpp"
+
+#include <netcon.h>
 
 // Create a fake unused default route to force detection of network type on networks without gateways
 #define ZT_WINDOWS_CREATE_FAKE_DEFAULT_ROUTE
@@ -477,7 +467,8 @@ WindowsEthernetTap::WindowsEthernetTap(
 	_pathToHelpers(hp),
 	_run(true),
 	_initialized(false),
-	_enabled(true)
+	_enabled(true),
+	_lastIfAddrsUpdate(0)
 {
 	char subkeyName[1024];
 	char subkeyClass[1024];
@@ -657,6 +648,7 @@ WindowsEthernetTap::WindowsEthernetTap(
 
 WindowsEthernetTap::~WindowsEthernetTap()
 {
+	WinDNSHelper::removeDNS(_nwid);
 	_run = false;
 	ReleaseSemaphore(_injectSemaphore,1,NULL);
 	Thread::join(_thread);
@@ -758,6 +750,14 @@ std::vector<InetAddress> WindowsEthernetTap::ips() const
 	if (!_initialized)
 		return addrs;
 
+	uint64_t now = OSUtils::now();
+
+	if ((now - _lastIfAddrsUpdate) <= GETIFADDRS_CACHE_TIME) {
+		return _ifaddrs;
+	}
+
+	_lastIfAddrsUpdate = now;
+
 	try {
 		MIB_UNICASTIPADDRESS_TABLE *ipt = (MIB_UNICASTIPADDRESS_TABLE *)0;
 		if (GetUnicastIpAddressTable(AF_UNSPEC,&ipt) == NO_ERROR) {
@@ -785,6 +785,8 @@ std::vector<InetAddress> WindowsEthernetTap::ips() const
 
 	std::sort(addrs.begin(),addrs.end());
 	addrs.erase(std::unique(addrs.begin(),addrs.end()),addrs.end());
+
+	_ifaddrs = addrs;
 
 	return addrs;
 }
@@ -819,11 +821,73 @@ void WindowsEthernetTap::setFriendlyName(const char *dn)
 {
 	if (!_initialized)
 		return;
+
 	HKEY ifp;
 	if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,(std::string("SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\") + _netCfgInstanceId).c_str(),0,KEY_READ|KEY_WRITE,&ifp) == ERROR_SUCCESS) {
 		RegSetKeyValueA(ifp,"Connection","Name",REG_SZ,(LPCVOID)dn,(DWORD)(strlen(dn)+1));
 		RegCloseKey(ifp);
 	}
+
+	HRESULT hr = S_OK;
+
+	INetSharingManager *nsm;
+	hr = CoCreateInstance(__uuidof(NetSharingManager), NULL, CLSCTX_ALL, __uuidof(INetSharingManager), (void**)&nsm);
+	if (hr != S_OK)	return;
+
+	bool found = false;
+	INetSharingEveryConnectionCollection *nsecc = nullptr;
+	hr = nsm->get_EnumEveryConnection(&nsecc);
+	if (!nsecc) {
+		fprintf(stderr, "Failed to get NSM connections");
+		return;
+	}
+
+	IEnumVARIANT *ev = nullptr;
+	IUnknown *unk = nullptr;
+	hr = nsecc->get__NewEnum(&unk);
+	if (unk) {
+		hr = unk->QueryInterface(__uuidof(IEnumVARIANT), (void**)&ev);
+		unk->Release();
+	}
+	if (ev) {
+		VARIANT v;
+		VariantInit(&v);
+
+		while ((S_OK == ev->Next(1, &v, NULL)) && found == FALSE) {
+			if (V_VT(&v) == VT_UNKNOWN) {
+				INetConnection *nc = nullptr;
+				V_UNKNOWN(&v)->QueryInterface(__uuidof(INetConnection), (void**)&nc);
+				if (nc) {
+					NETCON_PROPERTIES *ncp = nullptr;
+					nc->GetProperties(&ncp);
+
+					if (ncp != nullptr) {
+						GUID curId = ncp->guidId;
+						if (curId == _deviceGuid) {
+							wchar_t wtext[255];
+							mbstowcs(wtext, dn, strlen(dn)+1);
+							nc->Rename(wtext);
+							found = true;
+						}
+					}
+					nc->Release();
+				}
+			}
+			VariantClear(&v);
+		}
+		ev->Release();
+	}
+	nsecc->Release();
+
+	_friendlyName_m.lock();
+	_friendlyName = dn;
+	_friendlyName_m.unlock();
+}
+
+std::string WindowsEthernetTap::friendlyName() const
+{
+	Mutex::Lock l(_friendlyName_m);
+	return _friendlyName;
 }
 
 void WindowsEthernetTap::scanMulticastGroups(std::vector<MulticastGroup> &added,std::vector<MulticastGroup> &removed)
@@ -900,6 +964,12 @@ NET_IFINDEX WindowsEthernetTap::interfaceIndex() const
 void WindowsEthernetTap::threadMain()
 	throw()
 {
+	HRESULT hres = CoInitializeEx(0, COINIT_MULTITHREADED);
+	if (FAILED(hres)) {
+		fprintf(stderr, "WinEthernetTap: COM initialization failed");
+		return;
+	}
+
 	char tapReadBuf[ZT_MAX_MTU + 32];
 	char tapPath[128];
 	HANDLE wait4[3];
@@ -1118,6 +1188,7 @@ void WindowsEthernetTap::threadMain()
 			// We will restart and re-open the tap unless _run == false
 		}
 	} catch ( ... ) {} // catch unexpected exceptions -- this should not happen but would prevent program crash or other weird issues since threads should not throw
+	CoUninitialize();
 }
 
 NET_IFINDEX WindowsEthernetTap::_getDeviceIndex()
@@ -1244,6 +1315,11 @@ void WindowsEthernetTap::_syncIps()
 			}
 		}
 	}
+}
+
+void WindowsEthernetTap::setDns(const char* domain, const std::vector<InetAddress>& servers)
+{
+	WinDNSHelper::setDNS(_nwid, domain, servers);
 }
 
 } // namespace ZeroTier

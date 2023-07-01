@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_WORLD_HPP
 #define ZT_WORLD_HPP
@@ -161,8 +148,9 @@ public:
 	 */
 	inline bool shouldBeReplacedBy(const World &update)
 	{
-		if ((_id == 0)||(_type == TYPE_NULL))
+		if ((_id == 0)||(_type == TYPE_NULL)) {
 			return true;
+		}
 		if ((_id == update._id)&&(_ts < update._ts)&&(_type == update._type)) {
 			Buffer<ZT_WORLD_MAX_SERIALIZED_LENGTH> tmp;
 			update.serialize(tmp,true);
@@ -179,25 +167,32 @@ public:
 	template<unsigned int C>
 	inline void serialize(Buffer<C> &b,bool forSign = false) const
 	{
-		if (forSign) b.append((uint64_t)0x7f7f7f7f7f7f7f7fULL);
+		if (forSign) {
+			b.append((uint64_t)0x7f7f7f7f7f7f7f7fULL);
+		}
 
 		b.append((uint8_t)_type);
 		b.append((uint64_t)_id);
 		b.append((uint64_t)_ts);
 		b.append(_updatesMustBeSignedBy.data,ZT_C25519_PUBLIC_KEY_LEN);
-		if (!forSign)
+		if (!forSign) {
 			b.append(_signature.data,ZT_C25519_SIGNATURE_LEN);
+		}
 		b.append((uint8_t)_roots.size());
 		for(std::vector<Root>::const_iterator r(_roots.begin());r!=_roots.end();++r) {
 			r->identity.serialize(b);
 			b.append((uint8_t)r->stableEndpoints.size());
-			for(std::vector<InetAddress>::const_iterator ep(r->stableEndpoints.begin());ep!=r->stableEndpoints.end();++ep)
+			for(std::vector<InetAddress>::const_iterator ep(r->stableEndpoints.begin());ep!=r->stableEndpoints.end();++ep) {
 				ep->serialize(b);
+			}
 		}
-		if (_type == TYPE_MOON)
+		if (_type == TYPE_MOON) {
 			b.append((uint16_t)0); // no attached dictionary (for future use)
+		}
 
-		if (forSign) b.append((uint64_t)0xf7f7f7f7f7f7f7f7ULL);
+		if (forSign) {
+			b.append((uint64_t)0xf7f7f7f7f7f7f7f7ULL);
+		}
 	}
 
 	template<unsigned int C>
@@ -208,34 +203,47 @@ public:
 		_roots.clear();
 
 		switch((Type)b[p++]) {
-			case TYPE_NULL: _type = TYPE_NULL; break; // shouldn't ever really happen in serialized data but it's not invalid
-			case TYPE_PLANET: _type = TYPE_PLANET; break;
-			case TYPE_MOON: _type = TYPE_MOON; break;
+			case TYPE_NULL: // shouldn't ever really happen in serialized data but it's not invalid
+				_type = TYPE_NULL;
+				break;
+			case TYPE_PLANET:
+				_type = TYPE_PLANET;
+				break;
+			case TYPE_MOON:
+				_type = TYPE_MOON;
+				break;
 			default:
 				throw ZT_EXCEPTION_INVALID_SERIALIZED_DATA_INVALID_TYPE;
 		}
 
-		_id = b.template at<uint64_t>(p); p += 8;
-		_ts = b.template at<uint64_t>(p); p += 8;
-		memcpy(_updatesMustBeSignedBy.data,b.field(p,ZT_C25519_PUBLIC_KEY_LEN),ZT_C25519_PUBLIC_KEY_LEN); p += ZT_C25519_PUBLIC_KEY_LEN;
-		memcpy(_signature.data,b.field(p,ZT_C25519_SIGNATURE_LEN),ZT_C25519_SIGNATURE_LEN); p += ZT_C25519_SIGNATURE_LEN;
+		_id = b.template at<uint64_t>(p);
+		p += 8;
+		_ts = b.template at<uint64_t>(p);
+		p += 8;
+		memcpy(_updatesMustBeSignedBy.data,b.field(p,ZT_C25519_PUBLIC_KEY_LEN),ZT_C25519_PUBLIC_KEY_LEN);
+		p += ZT_C25519_PUBLIC_KEY_LEN;
+		memcpy(_signature.data,b.field(p,ZT_C25519_SIGNATURE_LEN),ZT_C25519_SIGNATURE_LEN);
+		p += ZT_C25519_SIGNATURE_LEN;
 		const unsigned int numRoots = (unsigned int)b[p++];
-		if (numRoots > ZT_WORLD_MAX_ROOTS)
+		if (numRoots > ZT_WORLD_MAX_ROOTS) {
 			throw ZT_EXCEPTION_INVALID_SERIALIZED_DATA_OVERFLOW;
+		}
 		for(unsigned int k=0;k<numRoots;++k) {
 			_roots.push_back(Root());
 			Root &r = _roots.back();
 			p += r.identity.deserialize(b,p);
 			unsigned int numStableEndpoints = b[p++];
-			if (numStableEndpoints > ZT_WORLD_MAX_STABLE_ENDPOINTS_PER_ROOT)
+			if (numStableEndpoints > ZT_WORLD_MAX_STABLE_ENDPOINTS_PER_ROOT) {
 				throw ZT_EXCEPTION_INVALID_SERIALIZED_DATA_OVERFLOW;
+			}
 			for(unsigned int kk=0;kk<numStableEndpoints;++kk) {
 				r.stableEndpoints.push_back(InetAddress());
 				p += r.stableEndpoints.back().deserialize(b,p);
 			}
 		}
-		if (_type == TYPE_MOON)
+		if (_type == TYPE_MOON) {
 			p += b.template at<uint16_t>(p) + 2;
+		}
 
 		return (p - startAt);
 	}

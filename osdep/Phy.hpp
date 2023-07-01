@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_PHY_HPP
 #define ZT_PHY_HPP
@@ -36,9 +23,9 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 
-#include <WinSock2.h>
-#include <WS2tcpip.h>
-#include <Windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
 
 #define ZT_PHY_SOCKFD_TYPE SOCKET
 #define ZT_PHY_SOCKFD_NULL (INVALID_SOCKET)
@@ -62,6 +49,8 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+
+#include "../node/Metrics.hpp"
 
 #if defined(__linux__) || defined(linux) || defined(__LINUX__) || defined(__linux)
 #ifndef IPV6_DONTFRAG
@@ -153,12 +142,11 @@ private:
 	};
 
 	struct PhySocketImpl {
-		PhySocketImpl() { memset(ifname, 0, sizeof(ifname)); }
+		PhySocketImpl() {}
 		PhySocketType type;
 		ZT_PHY_SOCKFD_TYPE sock;
 		void *uptr; // user-settable pointer
 		ZT_PHY_SOCKADDR_STORAGE_TYPE saddr; // remote for TCP_OUT and TCP_IN, local for TCP_LISTEN, RAW, and UDP
-		char ifname[16];
 	};
 
 	std::list<PhySocketImpl> _socks;
@@ -242,76 +230,18 @@ public:
 	 * @param s Socket object
 	 * @return Underlying OS-type (usually int or long) file descriptor associated with object
 	 */
-	static inline ZT_PHY_SOCKFD_TYPE getDescriptor(PhySocket *s) throw() { return reinterpret_cast<PhySocketImpl *>(s)->sock; }
+	static inline ZT_PHY_SOCKFD_TYPE getDescriptor(PhySocket* s) throw()
+	{
+		return reinterpret_cast<PhySocketImpl*>(s)->sock;
+	}
 
 	/**
 	 * @param s Socket object
 	 * @return Pointer to user object
 	 */
-	static inline void** getuptr(PhySocket *s) throw() { return &(reinterpret_cast<PhySocketImpl *>(s)->uptr); }
-
-	/**
-	 * @param s Socket object
-	 * @param nameBuf Buffer to store name of interface which this Socket object is bound to
-	 * @param buflen Length of buffer to copy name into
-	 */
-	static inline void getIfName(PhySocket *s, char *nameBuf, int buflen)
+	static inline void** getuptr(PhySocket* s) throw()
 	{
-		if (s) {
-			memcpy(nameBuf, reinterpret_cast<PhySocketImpl *>(s)->ifname, buflen);
-		}
-	}
-
-	/**
-	 * @param s Socket object
-	 * @param ifname Buffer containing name of interface that this Socket object is bound to
-	 * @param len Length of name of interface
-	 */
-	static inline void setIfName(PhySocket *s, char *ifname, int len)
-	{
-		if (s) {
-			memcpy(&(reinterpret_cast<PhySocketImpl *>(s)->ifname), ifname, len);
-		}
-	}
-
-	/**
-	 * Whether or not the socket object is in a closed state
-	 *
-	 * @param s Socket object
-	 * @return true if socket is closed, false if otherwise
-	 */
-	inline bool isClosed(PhySocket *s)
-	{
-		PhySocketImpl *sws = (reinterpret_cast<PhySocketImpl *>(s));
-		return sws->type == ZT_PHY_SOCKET_CLOSED;
-	}
-
-	/**
-	 * Get state of socket object
-	 *
-	 * @param s Socket object
-	 * @return State of socket
-	 */
-	inline int getState(PhySocket *s)
-	{
-		PhySocketImpl *sws = (reinterpret_cast<PhySocketImpl *>(s));
-		return sws->type;
-	}
-
-	/**
-	 * In the event that this socket is erased, we need a way to convey to the multipath logic
-	 * that this path is no longer valid.
-	 *
-	 * @param s Socket object
-	 * @return Whether the state of this socket is within an acceptable range of values
-	 */
-	inline bool isValidState(PhySocket *s)
-	{
-		if (s) {
-			PhySocketImpl *sws = (reinterpret_cast<PhySocketImpl *>(s));
-			return sws->type >= ZT_PHY_SOCKET_CLOSED && sws->type <= ZT_PHY_SOCKET_UNIX_LISTEN;
-		}
-		return false;
+		return &(reinterpret_cast<PhySocketImpl*>(s)->uptr);
 	}
 
 	/**
@@ -323,21 +253,27 @@ public:
 	inline void whack()
 	{
 #if defined(_WIN32) || defined(_WIN64)
-		::send(_whackSendSocket,(const char *)this,1,0);
+		::send(_whackSendSocket, (const char*)this, 1, 0);
 #else
-		(void)(::write(_whackSendSocket,(PhySocket *)this,1));
+		(void)(::write(_whackSendSocket, (PhySocket*)this, 1));
 #endif
 	}
 
 	/**
 	 * @return Number of open sockets
 	 */
-	inline unsigned long count() const throw() { return _socks.size(); }
+	inline unsigned long count() const throw()
+	{
+		return _socks.size();
+	}
 
 	/**
 	 * @return Maximum number of sockets allowed
 	 */
-	inline unsigned long maxCount() const throw() { return ZT_PHY_MAX_SOCKETS; }
+	inline unsigned long maxCount() const throw()
+	{
+		return ZT_PHY_MAX_SOCKETS;
+	}
 
 	/**
 	 * Wrap a raw file descriptor in a PhySocket structure
@@ -404,14 +340,14 @@ public:
 				int tmpbs = bs;
 				if (setsockopt(s,SOL_SOCKET,SO_RCVBUF,(const char *)&tmpbs,sizeof(tmpbs)) == 0)
 					break;
-				bs -= 16384;
+				bs -= 4096;
 			}
 			bs = bufferSize;
 			while (bs >= 65536) {
 				int tmpbs = bs;
 				if (setsockopt(s,SOL_SOCKET,SO_SNDBUF,(const char *)&tmpbs,sizeof(tmpbs)) == 0)
 					break;
-				bs -= 16384;
+				bs -= 4096;
 			}
 		}
 
@@ -517,11 +453,33 @@ public:
 	inline bool udpSend(PhySocket *sock,const struct sockaddr *remoteAddress,const void *data,unsigned long len)
 	{
 		PhySocketImpl &sws = *(reinterpret_cast<PhySocketImpl *>(sock));
+		bool sent = false;
 #if defined(_WIN32) || defined(_WIN64)
-		return ((long)::sendto(sws.sock,reinterpret_cast<const char *>(data),len,0,remoteAddress,(remoteAddress->sa_family == AF_INET6) ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in)) == (long)len);
+		sent = ((long)::sendto(
+				sws.sock,
+				reinterpret_cast<const char *>(data),
+				len,
+				0,
+				remoteAddress,
+				(remoteAddress->sa_family == AF_INET6) ? 
+					sizeof(struct sockaddr_in6) : 
+					sizeof(struct sockaddr_in)) == (long)len);
 #else
-		return ((long)::sendto(sws.sock,data,len,0,remoteAddress,(remoteAddress->sa_family == AF_INET6) ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in)) == (long)len);
+		sent = ((long)::sendto(
+				sws.sock,
+				data,
+				len,
+				0,
+				remoteAddress,
+				(remoteAddress->sa_family == AF_INET6) ? 
+					sizeof(struct sockaddr_in6) : 
+				 	sizeof(struct sockaddr_in)) == (long)len);
 #endif
+		if (sent) {
+			Metrics::udp_send += len;
+		}
+
+		return sent;
 	}
 
 #ifdef __UNIX_LIKE__

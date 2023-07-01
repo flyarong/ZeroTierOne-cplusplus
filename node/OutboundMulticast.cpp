@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2019 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #include "Constants.hpp"
 #include "RuntimeEnvironment.hpp"
@@ -63,20 +50,27 @@ void OutboundMulticast::init(
 	_frameLen = (len < ZT_MAX_MTU) ? len : ZT_MAX_MTU;
 	_etherType = etherType;
 
-	if (gatherLimit) flags |= 0x02;
+	if (gatherLimit) {
+		flags |= 0x02;
+	}
 
 	_packet.setSource(RR->identity.address());
 	_packet.setVerb(Packet::VERB_MULTICAST_FRAME);
 	_packet.append((uint64_t)nwid);
 	_packet.append(flags);
-	if (gatherLimit) _packet.append((uint32_t)gatherLimit);
-	if (src) src.appendTo(_packet);
+	if (gatherLimit) {
+		_packet.append((uint32_t)gatherLimit);
+	}
+	if (src) {
+		src.appendTo(_packet);
+	}
 	dest.mac().appendTo(_packet);
 	_packet.append((uint32_t)dest.adi());
 	_packet.append((uint16_t)etherType);
 	_packet.append(payload,_frameLen);
-	if (!disableCompression)
+	if (!disableCompression) {
 		_packet.compress();
+	}
 
 	memcpy(_frameData,payload,_frameLen);
 }

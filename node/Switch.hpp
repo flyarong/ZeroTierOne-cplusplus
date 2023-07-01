@@ -1,28 +1,15 @@
 /*
- * ZeroTier One - Network Virtualization Everywhere
- * Copyright (C) 2011-2019  ZeroTier, Inc.  https://www.zerotier.com/
+ * Copyright (c)2013-2020 ZeroTier, Inc.
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * Use of this software is governed by the Business Source License included
+ * in the LICENSE.TXT file in the project's root directory.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Change Date: 2025-01-01
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * --
- *
- * You can be released from the requirements of the license by purchasing
- * a commercial license. Buying such a license is mandatory as soon as you
- * develop commercial closed-source software that incorporates or links
- * directly against ZeroTier software without disclosing the source code
- * of your own application.
+ * On the date above, in accordance with the Business Source License, use
+ * of this software will be governed by version 2.0 of the Apache License.
  */
+/****/
 
 #ifndef ZT_N_SWITCH_HPP
 #define ZT_N_SWITCH_HPP
@@ -44,6 +31,16 @@
 #include "IncomingPacket.hpp"
 #include "Hashtable.hpp"
 
+/* Ethernet frame types that might be relevant to us */
+#define ZT_ETHERTYPE_IPV4 0x0800
+#define ZT_ETHERTYPE_ARP 0x0806
+#define ZT_ETHERTYPE_RARP 0x8035
+#define ZT_ETHERTYPE_ATALK 0x809b
+#define ZT_ETHERTYPE_AARP 0x80f3
+#define ZT_ETHERTYPE_IPX_A 0x8137
+#define ZT_ETHERTYPE_IPX_B 0x8138
+#define ZT_ETHERTYPE_IPV6 0x86dd
+
 namespace ZeroTier {
 
 class RuntimeEnvironment;
@@ -61,6 +58,8 @@ class Switch
 {
 	struct ManagedQueue;
 	struct TXQueueEntry;
+
+	friend class SharedPtr<Peer>;
 
 	typedef struct {
 		TXQueueEntry *p;
@@ -80,6 +79,11 @@ public:
 	 * @param len Packet length
 	 */
 	void onRemotePacket(void *tPtr,const int64_t localSocket,const InetAddress &fromAddr,const void *data,unsigned int len);
+
+	/**
+	 * Returns whether our bonding or balancing policy is aware of flows.
+	 */
+	bool isFlowAware();
 
 	/**
 	 * Called when a packet comes from a local Ethernet tap
@@ -121,7 +125,7 @@ public:
 	 * @param encrypt Encrypt packet payload? (always true except for HELLO)
 	 * @param qosBucket Which bucket the rule-system determined this packet should fall into
 	 */
-	void aqm_enqueue(void *tPtr, const SharedPtr<Network> &network, Packet &packet,bool encrypt,int qosBucket);
+	void aqm_enqueue(void *tPtr, const SharedPtr<Network> &network, Packet &packet,bool encrypt,int qosBucket,int32_t flowId = ZT_QOS_NO_FLOW);
 
 	/**
 	 * Performs a single AQM cycle and dequeues and transmits all eligible packets on all networks
@@ -167,7 +171,7 @@ public:
 	 * @param packet Packet to send (buffer may be modified)
 	 * @param encrypt Encrypt packet payload? (always true except for HELLO)
 	 */
-	void send(void *tPtr,Packet &packet,bool encrypt);
+	void send(void *tPtr,Packet &packet,bool encrypt,int32_t flowId = ZT_QOS_NO_FLOW);
 
 	/**
 	 * Request WHOIS on a given address
@@ -202,7 +206,9 @@ public:
 
 private:
 	bool _shouldUnite(const int64_t now,const Address &source,const Address &destination);
-	bool _trySend(void *tPtr,Packet &packet,bool encrypt); // packet is modified if return is true
+	bool _trySend(void *tPtr,Packet &packet,bool encrypt,int32_t flowId = ZT_QOS_NO_FLOW); // packet is modified if return is true
+	void _sendViaSpecificPath(void *tPtr,SharedPtr<Peer> peer,SharedPtr<Path> viaPath,uint16_t userSpecifiedMtu, int64_t now,Packet &packet,bool encrypt,int32_t flowId);
+	void _recordOutgoingPacketMetrics(const Packet &p);
 
 	const RuntimeEnvironment *const RR;
 	int64_t _lastBeaconResponse;
@@ -223,6 +229,7 @@ private:
 		unsigned int totalFragments; // 0 if only frag0 received, waiting for frags
 		uint32_t haveFragments; // bit mask, LSB to MSB
 		volatile bool complete; // if true, packet is complete
+		volatile int32_t flowId;
 		Mutex lock;
 	};
 	RXQueueEntry _rxQueue[ZT_RX_QUEUE_SIZE];
@@ -234,8 +241,9 @@ private:
 		const unsigned int current = static_cast<unsigned int>(_rxQueuePtr.load());
 		for(unsigned int k=1;k<=ZT_RX_QUEUE_SIZE;++k) {
 			RXQueueEntry *rq = &(_rxQueue[(current - k) % ZT_RX_QUEUE_SIZE]);
-			if ((rq->packetId == packetId)&&(rq->timestamp))
+			if ((rq->packetId == packetId)&&(rq->timestamp)) {
 				return rq;
+			}
 		}
 		++_rxQueuePtr;
 		return &(_rxQueue[static_cast<unsigned int>(current) % ZT_RX_QUEUE_SIZE]);
@@ -251,16 +259,18 @@ private:
 	struct TXQueueEntry
 	{
 		TXQueueEntry() {}
-		TXQueueEntry(Address d,uint64_t ct,const Packet &p,bool enc) :
+		TXQueueEntry(Address d,uint64_t ct,const Packet &p,bool enc,int32_t fid) :
 			dest(d),
 			creationTime(ct),
 			packet(p),
-			encrypt(enc) {}
+			encrypt(enc),
+			flowId(fid) {}
 
 		Address dest;
 		uint64_t creationTime;
 		Packet packet; // unencrypted/unMAC'd packet -- this is done at send time
 		bool encrypt;
+		int32_t flowId;
 	};
 	std::list< TXQueueEntry > _txQueue;
 	Mutex _txQueue_m;
@@ -292,7 +302,7 @@ private:
 	{
 		ManagedQueue(int id) :
 			id(id),
-			byteCredit(ZT_QOS_QUANTUM),
+			byteCredit(ZT_AQM_QUANTUM),
 			byteLength(0),
 			dropping(false)
 		{}
